@@ -1,0 +1,19 @@
+# Minimal Installation CR — the Tigera operator mutating admission fills in
+# defaults for blockSize, hostPorts, linuxPolicySetupTimeoutSeconds, cni.*,
+# controlPlaneReplicas, variant, etc. Those defaults are invisible to
+# kubectl apply's drift detection (client-side apply annotation model),
+# so keeping this minimal is both correct and idempotent.
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    bgp: {{ calico_bgp }}
+    linuxDataplane: Iptables
+    ipPools:
+      - cidr: {{ pod_subnet }}
+        encapsulation: {{ calico_encapsulation }}
+        natOutgoing: Enabled
+    nodeAddressAutodetectionV4:
+      canReach: {{ calico_can_reach }}

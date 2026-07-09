@@ -1,8 +1,57 @@
 ---
-# kubeadm-cp — Phase 5a stub. Real tasks in block 8:
-#   Jinja2 ClusterConfiguration.yaml (node-ip, providerID from IMDS,
-#   apiserver certSANs, controlPlaneEndpoint), idempotency guard on
-#   /etc/kubernetes/admin.conf, kubeadm init, fetch admin.conf to controller.
-- name: kubeadm-cp — placeholder
-  ansible.builtin.debug:
-    msg: "role kubeadm-cp not yet implemented"
+# kubeadm-cp — turns a prepped host into a k8s control plane node.
+# Idempotent via /etc/kubernetes/admin.conf stat guard: kubeadm init runs
+# ONLY if that file doesn't exist. Zero risk against a running cluster.
+#
+# D6: providerID rendered into kubelet extraArgs from IMDSv2 at
+# registration time, killing the manual `kubectl patch` step.
+
+# ── Fetch this cp's OCI instance OCID from IMDSv2 ─────────────────────────
+- name: Fetch this instance's OCI OCID from IMDSv2
+  ansible.builtin.uri:
+    url: "{{ imds_instance_id_url }}"
+    headers:
+      Authorization: "Bearer Oracle"
+    return_content: true
+  register: instance_ocid_response
+  changed_when: false
+  check_mode: false
+
+- name: Store OCID as a fact for template access
+  ansible.builtin.set_fact:
+    instance_ocid: "{{ instance_ocid_response.content | trim }}"
+
+# ── Idempotency guard: cluster already initialized? ──────────────────────
+- name: Check for /etc/kubernetes/admin.conf
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf_stat
+
+# ── Render kubeadm config (only if we'll actually init) ──────────────────
+- name: Render ClusterConfiguration.yaml
+  ansible.builtin.template:
+    src: ClusterConfiguration.yaml.j2
+    dest: /tmp/ClusterConfiguration.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  when: not admin_conf_stat.stat.exists
+
+# ── Initialize the cluster ────────────────────────────────────────────────
+- name: Run kubeadm init
+  ansible.builtin.command: kubeadm init --config=/tmp/ClusterConfiguration.yaml
+  when: not admin_conf_stat.stat.exists
+  register: kubeadm_init_output
+
+# ── Fetch admin.conf back to controller for operator/CI access ────────────
+- name: Re-stat admin.conf (may have been created above)
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf_stat_final
+
+- name: Fetch admin.conf to controller (~/.kube/config-lab)
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: "~/.kube/config-lab"
+    flat: true
+  when: admin_conf_stat_final.stat.exists

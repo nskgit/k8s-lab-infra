@@ -1,0 +1,61 @@
+# Rendered by Ansible from roles/kubeadm-cp/templates/. Do NOT hand-edit
+# on the node — it lives in /tmp/ and is regenerated on every play.
+
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: {{ apiserver_advertise_ip }}
+  bindPort: 6443
+nodeRegistration:
+  name: {{ inventory_hostname }}
+  criSocket: unix:///run/containerd/containerd.sock
+  # DON'T remove default cp taint (locked-decision #2)
+  taints: null
+  kubeletExtraArgs:
+    - name: cloud-provider
+      value: external
+    - name: node-ip
+      value: "{{ apiserver_advertise_ip }}"
+    # D6: providerID at registration time — no post-join manual patch, no
+    # race with CCM. OCID pulled from IMDSv2 by the role before templating.
+    - name: provider-id
+      value: "oci://{{ instance_ocid }}"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v{{ kubernetes_version }}
+clusterName: {{ cluster_name }}
+controlPlaneEndpoint: "{{ control_plane_endpoint }}"
+
+networking:
+  podSubnet:     "{{ pod_subnet }}"
+  serviceSubnet: "{{ service_subnet }}"
+  dnsDomain: cluster.local
+
+apiServer:
+  # certSANs — apiserver cert is valid for these names/IPs.
+  # 127.0.0.1 is required for kubectl-via-SSH-tunnel (locked-decision #23).
+  certSANs:
+    - "127.0.0.1"
+    - "{{ apiserver_advertise_ip }}"
+    - "{{ inventory_hostname }}"
+
+controllerManager:
+  extraArgs:
+    - name: cloud-provider
+      value: external
+
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+
+dns: {}
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+# Must match containerd's SystemdCgroup=true
+cgroupDriver: systemd
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: iptables

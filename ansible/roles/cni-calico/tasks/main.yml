@@ -1,8 +1,100 @@
 ---
-# cni-calico — Phase 5a stub. Real tasks in block 8:
-#   Tigera operator {{ tigera_operator_version }} manifest, Installation CR
-#   ({{ calico_encapsulation }}, bgp {{ calico_bgp }}, canReach
-#   {{ calico_can_reach }}), wait for status Available.
-- name: cni-calico — placeholder
-  ansible.builtin.debug:
-    msg: "role cni-calico not yet implemented"
+# cni-calico — installs Calico CNI via the Tigera operator model.
+#
+# Non-destructive on an already-installed cluster: kubectl apply is
+# idempotent; `changed_when` parses stdout to reflect real change status.
+# Wait tasks confirm operator + Installation reach Ready before the next
+# role runs.
+#
+# check-mode limitation: kubectl-apply tasks skip in --check because
+# ansible.builtin.command can't safely dry-run without side effects.
+# Idempotency is verified instead by running real apply twice and
+# confirming changed=0 on the second run.
+
+# ── Tigera operator (upstream release manifest) ──────────────────────────
+# stat-guard the download because get_url in --check reports "would
+# download" without verifying file bytes (module limitation) — every
+# subsequent check would falsely show changed=1 without this guard.
+- name: Check for existing tigera-operator manifest
+  ansible.builtin.stat:
+    path: /tmp/tigera-operator.yaml
+  register: tigera_manifest_stat
+
+- name: Download Tigera operator manifest ({{ calico_version }})
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
+    dest: /tmp/tigera-operator.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  when: not tigera_manifest_stat.stat.exists
+
+# --force-conflicts: takes ownership of fields previously managed by
+# `kubectl-create` (Phase 2's manual client-side apply). One-time
+# takeover on first Ansible apply; idempotent thereafter.
+- name: Apply Tigera operator (server-side; large CRDs)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -f
+      - /tmp/tigera-operator.yaml
+  register: tigera_apply
+  changed_when: >
+    tigera_apply.stdout_lines |
+    select('search', '(created|configured|serverside-applied)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+- name: Wait for tigera-operator deployment to be Available
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - tigera-operator
+      - wait
+      - deployment/tigera-operator
+      - --for=condition=Available
+      - --timeout=300s
+  changed_when: false
+  when: not ansible_check_mode
+
+# ── Installation CR (templated) ──────────────────────────────────────────
+- name: Render Installation CR
+  ansible.builtin.template:
+    src: installation.yaml.j2
+    dest: /tmp/installation.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Apply Installation CR
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - /tmp/installation.yaml
+  register: installation_apply
+  changed_when: >
+    installation_apply.stdout_lines |
+    select('search', '(created|configured)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+- name: Wait for Installation to reach Ready
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - wait
+      - installation.operator.tigera.io/default
+      - --for=condition=Ready
+      - --timeout=600s
+  changed_when: false
+  when: not ansible_check_mode
