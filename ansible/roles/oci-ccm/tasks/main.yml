@@ -1,8 +1,135 @@
 ---
-# oci-ccm — Phase 5a stub. Real tasks in block 9:
-#   cloud-provider.yaml Secret (compartment/vcn/public_subnet from TF outputs,
-#   useInstancePrincipals=true), apply CCM {{ oci_ccm_version }} manifests,
-#   wait for DaemonSet Ready + all nodes to have spec.providerID populated.
-- name: oci-ccm — placeholder
-  ansible.builtin.debug:
-    msg: "role oci-ccm not yet implemented"
+# oci-ccm — installs the OCI Cloud Controller Manager. CCM's job:
+# initialize each node with real InternalIP, providerID, and topology
+# labels from OCI metadata, then remove the uninitialized:NoSchedule
+# taint — until this happens, nothing schedules.
+#
+# Non-destructive on running cluster: kubectl apply is idempotent, waits
+# confirm the DaemonSet + node initialization.
+
+# ── Terraform outputs → facts (skipped if passed via --extra-vars in CI)
+- name: Read Terraform outputs from primary/
+  ansible.builtin.shell: |
+    set -e
+    [ -f ~/.k8s-lab-secrets/state-backend.env ] && . ~/.k8s-lab-secrets/state-backend.env
+    terraform -chdir={{ playbook_dir }}/../terraform/primary output -json
+  delegate_to: localhost
+  become: false           # localhost is the operator's Mac — no sudo, no k8s node context
+  register: tf_outputs_raw
+  changed_when: false
+  check_mode: false
+  when: (compartment_ocid is not defined) or (vcn_id is not defined) or (public_subnet_id is not defined)
+
+- name: Set OCI facts from Terraform outputs
+  ansible.builtin.set_fact:
+    compartment_ocid: "{{ (tf_outputs_raw.stdout | from_json).compartment_ocid.value }}"
+    vcn_id:           "{{ (tf_outputs_raw.stdout | from_json).vcn_id.value }}"
+    public_subnet_id: "{{ (tf_outputs_raw.stdout | from_json).public_subnet_id.value }}"
+  when: tf_outputs_raw is defined and tf_outputs_raw.stdout is defined
+
+# ── cloud-provider.yaml Secret ────────────────────────────────────────────
+- name: Render cloud-provider.yaml Secret manifest
+  ansible.builtin.template:
+    src: cloud-provider-secret.yaml.j2
+    dest: /tmp/cloud-provider-ccm-secret.yaml
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Apply cloud-provider.yaml Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - /tmp/cloud-provider-ccm-secret.yaml
+  register: ccm_secret_apply
+  changed_when: >
+    ccm_secret_apply.stdout_lines |
+    select('search', '(created|configured)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+# ── CCM manifests (2 files from GitHub release; verified against
+#    https://api.github.com/.../releases/tags/{{ oci_ccm_version }})
+- name: Check for existing CCM manifests
+  ansible.builtin.stat:
+    path: "/tmp/{{ item }}"
+  loop:
+    - oci-cloud-controller-manager.yaml
+    - oci-cloud-controller-manager-rbac.yaml
+  register: ccm_manifests_stat
+
+- name: Download CCM manifests ({{ oci_ccm_version }})
+  ansible.builtin.get_url:
+    url: "https://github.com/oracle/oci-cloud-controller-manager/releases/download/{{ oci_ccm_version }}/{{ item.item }}"
+    dest: "/tmp/{{ item.item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ ccm_manifests_stat.results }}"
+  when: not item.stat.exists
+
+# ── Apply in order: RBAC → DaemonSet ─────────────────────────────────────
+- name: Apply CCM RBAC
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -f
+      - /tmp/oci-cloud-controller-manager-rbac.yaml
+  register: ccm_rbac_apply
+  changed_when: >
+    ccm_rbac_apply.stdout_lines |
+    select('search', '(created|configured|serverside-applied)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+- name: Apply CCM DaemonSet
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -f
+      - /tmp/oci-cloud-controller-manager.yaml
+  register: ccm_ds_apply
+  changed_when: >
+    ccm_ds_apply.stdout_lines |
+    select('search', '(created|configured|serverside-applied)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+# ── Wait for CCM to be running + nodes to have providerID ────────────────
+- name: Wait for CCM DaemonSet rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - daemonset/oci-cloud-controller-manager
+      - --timeout=300s
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait for all nodes to have spec.providerID populated
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - wait
+      - "--for=jsonpath={.spec.providerID}"
+      - nodes
+      - --all
+      - --timeout=180s
+  changed_when: false
+  when: not ansible_check_mode

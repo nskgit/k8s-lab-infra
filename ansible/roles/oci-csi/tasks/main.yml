@@ -1,10 +1,260 @@
 ---
-# oci-csi — Phase 5a stub. Real tasks in block 9:
-#   external-snapshotter CRDs {{ snapshotter_crds_version }} FIRST,
-#   oci-volume-provisioner Secret (config.yaml key), apply CSI
-#   {{ oci_csi_version }} manifests (optional FSS/Lustre trim),
-#   oci-bv StorageClass + local-path-provisioner (default),
-#   wait for controller + node DaemonSet Ready.
-- name: oci-csi — placeholder
-  ansible.builtin.debug:
-    msg: "role oci-csi not yet implemented"
+# oci-csi — OCI Container Storage Interface driver + snapshotter CRDs +
+# StorageClasses. Depends on oci-ccm having populated node providerIDs
+# (CSI controller pod needs a schedulable cp).
+#
+# Non-destructive on running cluster: kubectl apply idempotent; annotate
+# guarded on current-state check to avoid apply/change false-positives.
+
+# ── Terraform outputs (defensive; oci-ccm usually set these) ─────────────
+- name: Read Terraform outputs from primary/
+  ansible.builtin.shell: |
+    set -e
+    [ -f ~/.k8s-lab-secrets/state-backend.env ] && . ~/.k8s-lab-secrets/state-backend.env
+    terraform -chdir={{ playbook_dir }}/../terraform/primary output -json
+  delegate_to: localhost
+  become: false           # localhost is the operator's Mac — no sudo, no k8s node context
+  register: tf_outputs_raw
+  changed_when: false
+  check_mode: false
+  when: (compartment_ocid is not defined) or (vcn_id is not defined) or (public_subnet_id is not defined)
+
+- name: Set OCI facts from Terraform outputs
+  ansible.builtin.set_fact:
+    compartment_ocid: "{{ (tf_outputs_raw.stdout | from_json).compartment_ocid.value }}"
+    vcn_id:           "{{ (tf_outputs_raw.stdout | from_json).vcn_id.value }}"
+    public_subnet_id: "{{ (tf_outputs_raw.stdout | from_json).public_subnet_id.value }}"
+  when: tf_outputs_raw is defined and tf_outputs_raw.stdout is defined
+
+# ── VolumeSnapshot CRDs — MUST land before CSI or controller crashloops ──
+- name: Check for existing snapshotter CRD manifests
+  ansible.builtin.stat:
+    path: "/tmp/{{ item }}"
+  loop:
+    - snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+    - snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+    - snapshot.storage.k8s.io_volumesnapshots.yaml
+  register: snapshotter_crd_stat
+
+- name: Download external-snapshotter CRDs ({{ snapshotter_crds_version }})
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/{{ snapshotter_crds_version }}/client/config/crd/{{ item.item }}"
+    dest: "/tmp/{{ item.item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ snapshotter_crd_stat.results }}"
+  when: not item.stat.exists
+
+- name: Apply external-snapshotter CRDs
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -f
+      - "/tmp/{{ item }}"
+  loop:
+    - snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+    - snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+    - snapshot.storage.k8s.io_volumesnapshots.yaml
+  register: snapshotter_apply
+  changed_when: >
+    snapshotter_apply.stdout_lines |
+    select('search', '(created|configured|serverside-applied)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+# ── config.yaml Secret (oci-volume-provisioner) ──────────────────────────
+- name: Render config.yaml Secret manifest for CSI
+  ansible.builtin.template:
+    src: config-secret.yaml.j2
+    dest: /tmp/cloud-provider-csi-secret.yaml
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Apply oci-volume-provisioner Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - /tmp/cloud-provider-csi-secret.yaml
+  register: csi_secret_apply
+  changed_when: >
+    csi_secret_apply.stdout_lines |
+    select('search', '(created|configured)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+# ── CSI manifests (3 files from same release as CCM) ─────────────────────
+- name: Check for existing CSI manifests
+  ansible.builtin.stat:
+    path: "/tmp/{{ item }}"
+  loop:
+    - oci-csi-node-rbac.yaml
+    - oci-csi-controller-driver.yaml
+    - oci-csi-node-driver.yaml
+  register: csi_manifests_stat
+
+- name: Download CSI manifests ({{ oci_csi_version }})
+  ansible.builtin.get_url:
+    url: "https://github.com/oracle/oci-cloud-controller-manager/releases/download/{{ oci_csi_version }}/{{ item.item }}"
+    dest: "/tmp/{{ item.item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ csi_manifests_stat.results }}"
+  when: not item.stat.exists
+
+- name: Apply CSI RBAC + drivers
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -f
+      - "/tmp/{{ item }}"
+  loop:
+    - oci-csi-node-rbac.yaml
+    - oci-csi-controller-driver.yaml
+    - oci-csi-node-driver.yaml
+  register: csi_apply
+  changed_when: >
+    csi_apply.stdout_lines |
+    select('search', '(created|configured|serverside-applied)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+# ── Wait for CSI to be up ────────────────────────────────────────────────
+- name: Wait for CSI controller Deployment rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - deployment/csi-oci-controller
+      - --timeout=300s
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait for CSI node DaemonSet rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - daemonset/csi-oci-node
+      - --timeout=300s
+  changed_when: false
+  when: not ansible_check_mode
+
+# ── StorageClass oci-bv (from k8s/storage/, single source of truth) ──────
+- name: Copy oci-bv StorageClass to cp
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../k8s/storage/oci-bv-storageclass.yaml"
+    dest: /tmp/oci-bv-storageclass.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Apply oci-bv StorageClass
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - /tmp/oci-bv-storageclass.yaml
+  register: oci_bv_apply
+  changed_when: >
+    oci_bv_apply.stdout_lines |
+    select('search', '(created|configured)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+# ── local-path-provisioner (rancher v0.0.31) + mark default ─────────────
+- name: Check for existing local-path manifest
+  ansible.builtin.stat:
+    path: /tmp/local-path-storage.yaml
+  register: localpath_stat
+
+- name: Download local-path-provisioner v0.0.31 manifest
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml"
+    dest: /tmp/local-path-storage.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  when: not localpath_stat.stat.exists
+
+- name: Apply local-path-provisioner
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - /tmp/local-path-storage.yaml
+  register: localpath_apply
+  changed_when: >
+    localpath_apply.stdout_lines |
+    select('search', '(created|configured)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+- name: Wait for local-path-provisioner Deployment
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - local-path-storage
+      - rollout
+      - status
+      - deployment/local-path-provisioner
+      - --timeout=300s
+  changed_when: false
+  when: not ansible_check_mode
+
+# Check current default-class annotation so annotate task doesn't run
+# every time (kubectl annotate always outputs "annotated" — output-based
+# idempotency doesn't work).
+- name: Read local-path default-class annotation
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - get
+      - sc
+      - local-path
+      - -o
+      - jsonpath={.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}
+  register: localpath_default_annotation
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Mark local-path as default StorageClass
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - annotate
+      - storageclass
+      - local-path
+      - storageclass.kubernetes.io/is-default-class=true
+      - --overwrite
+  when: not ansible_check_mode and (localpath_default_annotation.stdout | default('') != 'true')
