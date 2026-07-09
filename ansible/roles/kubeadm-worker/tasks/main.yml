@@ -1,9 +1,90 @@
 ---
-# kubeadm-worker — Phase 5a stub. Real tasks in block 10:
-#   delegate_to cp: kubeadm token create --print-join-command,
-#   Jinja2 JoinConfiguration.yaml (node-ip from facts, providerID from IMDS),
-#   idempotency guard on /etc/kubernetes/kubelet.conf, kubeadm join,
-#   wait for node Ready from cp's kubeconfig.
-- name: kubeadm-worker — placeholder
-  ansible.builtin.debug:
-    msg: "role kubeadm-worker not yet implemented"
+# kubeadm-worker — joins a prepped node to the running control plane.
+# Idempotent via /etc/kubernetes/kubelet.conf stat guard: destructive
+# tasks (token fetch, template render, kubeadm join) skip on
+# already-joined nodes.
+#
+# Q3 design note: kubeadm-cp's `kubeadm init` output is NOT stored
+# anywhere. Every playbook run mints a fresh 10-minute token via
+# `kubeadm token create --print-join-command` delegated to cp. Ephemeral
+# by design — the only durable secret this role touches is the CA cert
+# hash, which is a stable public fingerprint of the cluster CA, not a
+# credential.
+
+# ── Idempotency guard: worker already joined? ────────────────────────────
+- name: Check for /etc/kubernetes/kubelet.conf
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf_stat
+
+# ── Fetch this worker's OCI instance OCID from IMDSv2 ────────────────────
+- name: Fetch this instance's OCI OCID from IMDSv2
+  ansible.builtin.uri:
+    url: "{{ imds_instance_id_url }}"
+    headers:
+      Authorization: "Bearer Oracle"
+    return_content: true
+  register: instance_ocid_response
+  changed_when: false
+  check_mode: false
+  when: not kubelet_conf_stat.stat.exists
+
+- name: Store OCID as a fact for template access
+  ansible.builtin.set_fact:
+    instance_ocid: "{{ instance_ocid_response.content | trim }}"
+  when: not kubelet_conf_stat.stat.exists
+
+# ── Mint a fresh 10-minute join token on cp ─────────────────────────────
+- name: Fetch fresh join command from cp
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - kubeadm
+      - token
+      - create
+      - --print-join-command
+      - --ttl
+      - 10m
+  delegate_to: control-plane-1
+  register: join_command_raw
+  changed_when: false
+  check_mode: false
+  when: not kubelet_conf_stat.stat.exists
+
+# join command format:
+#   kubeadm join <endpoint> --token <T> --discovery-token-ca-cert-hash sha256:<H>
+- name: Parse token + hash from join command
+  ansible.builtin.set_fact:
+    bootstrap_token: "{{ join_command_raw.stdout | regex_search('--token\\s+(\\S+)', '\\1') | first }}"
+    ca_cert_hash:    "{{ join_command_raw.stdout | regex_search('sha256:(\\S+)', '\\1') | first }}"
+  when: not kubelet_conf_stat.stat.exists
+
+# ── Render JoinConfiguration.yaml ────────────────────────────────────────
+- name: Render JoinConfiguration.yaml
+  ansible.builtin.template:
+    src: JoinConfiguration.yaml.j2
+    dest: /tmp/JoinConfiguration.yaml
+    owner: root
+    group: root
+    mode: '0600'   # contains bootstrap token — shortlived, still guard perms
+  when: not kubelet_conf_stat.stat.exists
+
+# ── Join the cluster ─────────────────────────────────────────────────────
+- name: Run kubeadm join
+  ansible.builtin.command: kubeadm join --config=/tmp/JoinConfiguration.yaml
+  register: kubeadm_join_output
+  when: not kubelet_conf_stat.stat.exists
+
+# ── Wait for this node to reach Ready ────────────────────────────────────
+- name: Wait for {{ inventory_hostname }} to reach Ready
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - wait
+      - "node/{{ inventory_hostname }}"
+      - --for=condition=Ready
+      - --timeout=180s
+  delegate_to: control-plane-1
+  changed_when: false
+  when: not kubelet_conf_stat.stat.exists and not ansible_check_mode

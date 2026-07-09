@@ -1,0 +1,27 @@
+# Rendered by Ansible per-worker. Do NOT hand-edit on the node — lives
+# in /tmp/ and is regenerated on every play. Same InitConfiguration/
+# JoinConfiguration idioms as the cp template.
+
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "{{ control_plane_endpoint }}"
+    token: {{ bootstrap_token }}
+    caCertHashes:
+      - "sha256:{{ ca_cert_hash }}"
+
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  # Workers get no special taints — user workloads schedule normally.
+  taints: null
+  kubeletExtraArgs:
+    - name: cloud-provider
+      value: external
+    - name: node-ip
+      value: "{{ ansible_facts.default_ipv4.address }}"
+    # D6: providerID at kubelet-registration time — kills the post-join
+    # `kubectl patch` step and avoids racing CCM.
+    - name: provider-id
+      value: "oci://{{ instance_ocid }}"
