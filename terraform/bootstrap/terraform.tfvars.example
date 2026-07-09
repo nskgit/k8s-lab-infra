@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars (gitignored) and fill in your real values.
+# Run once: terraform init && terraform plan   (apply is a separate, later step)
+
+tenancy_ocid = "ocid1.tenancy.oc1..xxxx"
+user_ocid    = "ocid1.user.oc1..xxxx"
+region       = "us-ashburn-1"
+region_key   = "iad"
+
+compartment_name  = "k8s-lab"
+state_bucket_name = "k8s-lab-tfstate"
+
+# ocir_repo_names = ["storefront", "catalog", "cart", "orders", "auth"]

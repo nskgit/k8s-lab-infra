@@ -1,0 +1,24 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+crash.log
+crash.*.log
+
+# Backend config (contains bucket/credentials wiring, not secret itself but env-specific)
+backend.hcl
+!backend.hcl.example
+
+# Secrets / keys
+*.pem
+*.key
+.env
+
+# OS
+.DS_Store

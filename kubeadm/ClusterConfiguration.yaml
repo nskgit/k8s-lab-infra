@@ -1,0 +1,115 @@
+# kubeadm bootstrap config — declarative, committed to git.
+# Consumed by: sudo kubeadm init --config=/tmp/ClusterConfiguration.yaml
+#
+# Design decisions (see docs/PROJECT-PLAN-v3.md locked-decisions table):
+#   #6  cloud-provider=external from day one → CCM install in Phase 4
+#   #11 Calico VXLAN, pod 10.244.0.0/16, service 10.96.0.0/16
+#   #12 CoreDNS via kubeadm addon
+#   #23 kubectl access via SSH tunnel → 127.0.0.1 must be in apiserver cert SANs
+#
+# Field reference:
+#   https://kubernetes.io/docs/reference/config-api/kubeadm-config.v1beta4/
+
+# ---------------------------------------------------------------------------
+# 1) InitConfiguration — one-time settings for THIS kubeadm init run.
+#    Concerns: local node info + how kubelet registers with the apiserver.
+# ---------------------------------------------------------------------------
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  # The address kube-apiserver binds to on this node.
+  # Must be the node's real private IP so workers can reach it.
+  advertiseAddress: 10.0.1.209
+  bindPort: 6443
+nodeRegistration:
+  name: control-plane-1
+  # kubelet talks to this CRI socket to run pods.
+  criSocket: unix:///run/containerd/containerd.sock
+  # DON'T remove the default control-plane taint — cp stays tainted per decision #2.
+  # kubeadm applies node-role.kubernetes.io/control-plane:NoSchedule by default;
+  # we deliberately leave it in place.
+  taints: null    # null = use kubeadm defaults (which is the taint we want)
+  kubeletExtraArgs:
+    - name: cloud-provider
+      value: external      # decision #6 — external CCM owns node lifecycle
+    # REQUIRED with cloud-provider=external: kubelet defers node addresses to
+    # the CCM, so without an explicit node-ip the node registers with NO
+    # InternalIP. Cascade we hit live: hostNetwork pods (typha, etcd, apiserver)
+    # get no pod IP → calico-typha Service has empty endpoints → calico-node
+    # FATAL "Typha discovery failed" → felix never ready. Also breaks
+    # apiserver→kubelet logs/exec (falls back to hostname, which VCN DNS
+    # can't resolve). Workers need the same flag in their join config.
+    - name: node-ip
+      value: "10.0.1.209"
+---
+
+# ---------------------------------------------------------------------------
+# 2) ClusterConfiguration — cluster-wide static settings baked into the
+#    control-plane static-pod manifests at init time.
+# ---------------------------------------------------------------------------
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v1.33.13
+clusterName: k8s-lab
+# Endpoint for kubelets and workers to reach the apiserver. Single-cp today
+# (points at cp's node IP). For HA multi-cp later, this becomes a stable
+# DNS/VIP fronting all cp nodes.
+controlPlaneEndpoint: "10.0.1.209:6443"
+
+networking:
+  podSubnet:     "10.244.0.0/16"   # Calico VXLAN — decision #11
+  serviceSubnet: "10.96.0.0/16"    # ClusterIP range — decision #11
+  dnsDomain: cluster.local
+
+apiServer:
+  # certSANs = which hostnames/IPs the apiserver's serving cert is valid for.
+  # kubectl from Mac connects via SSH tunnel to https://127.0.0.1:6443 —
+  # 127.0.0.1 must be in this list, else TLS validation fails.
+  certSANs:
+    - "127.0.0.1"
+    - "10.0.1.209"
+    - "control-plane-1"
+  # NOTE: NO --cloud-provider=external here. That flag was removed from
+  # kube-apiserver in Kubernetes 1.29+ (deprecated 1.24, hidden 1.30, gone 1.33).
+  # Cloud-provider decisions live on controllerManager + kubelet only.
+
+controllerManager:
+  extraArgs:
+    - name: cloud-provider
+      value: external
+
+# etcd: default = local (stacked). Single-cp = single-node etcd.
+# Multi-cp HA at Phase 14 will switch to 3-node stacked etcd or external etcd.
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+
+# CoreDNS: kubeadm addon (decision #12). No overrides — take the default install.
+dns: {}
+---
+
+# ---------------------------------------------------------------------------
+# 3) KubeletConfiguration — applied to every kubelet in the cluster
+#    (cp's kubelet uses this now; workers get it downloaded when they join).
+#
+# NOTE: --cloud-provider=external is a kubelet command-line FLAG, not a config-
+# file field. This YAML kind does not accept `cloudProvider`. For cp we inject
+# it via InitConfiguration.nodeRegistration.kubeletExtraArgs above. For workers
+# we inject the same via JoinConfiguration.nodeRegistration.kubeletExtraArgs in
+# Phase 2.7.
+# ---------------------------------------------------------------------------
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+# Must match containerd's SystemdCgroup=true (Phase 2.2). Mismatch = pods land
+# in the wrong cgroup hierarchy and memory limits don't work.
+cgroupDriver: systemd
+---
+
+# ---------------------------------------------------------------------------
+# 4) KubeProxyConfiguration — cluster-wide kube-proxy settings.
+#    Default mode = iptables (fine for our scale). IPVS is a Phase 15
+#    optimization worth considering only if we hit thousands of Services.
+# ---------------------------------------------------------------------------
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: iptables

@@ -1,0 +1,64 @@
+flowchart TB
+    classDef dev fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    classDef git fill:#e8eaf6,stroke:#3949ab,color:#1a237e
+    classDef auto fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef cluster fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    classDef future fill:#eceff1,stroke:#607d8b,color:#37474f,stroke-dasharray:5 5
+
+    ROUND1["ROUND 1 - learning, done once by hand over SSH:<br/>kernel prep · containerd · kubeadm init from ClusterConfiguration YAML<br/>with cloud-provider=external · Calico VXLAN · joins · CoreDNS deep-dive ·<br/>then manual Helm installs: OCI CCM+CSI → Istio base/istiod/gateway →<br/>kube-prometheus-stack → Argo CD.<br/>Every step is then codified: OS/cluster → Ansible, in-cluster → Argo apps."]:::dev
+
+    subgraph INFRA["k8s-lab-infra pipeline - platform changes"]
+        direction TB
+        B1["Open PR - terraform/ or ansible/ change"]:::git
+        B2["CI on PR: terraform fmt · validate · plan as PR comment<br/>+ ansible-lint · syntax check"]:::auto
+        B3["Review the exact plan · merge to main"]:::git
+        B4["Manual approval gate - GitHub Environment"]:::git
+        B5["terraform apply - reusable modules, per-region state<br/>in OCI Object Storage"]:::auto
+        B6["Render Ansible inventory from terraform output -json"]:::auto
+        B7["ansible-playbook site.yml - idempotent roles:<br/>common · containerd · kubeadm-cp · kubeadm-worker"]:::auto
+        B8["Final Ansible task: bootstrap Argo CD<br/>+ apply argocd/root-app.yaml - handoff to GitOps"]:::auto
+        B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8
+    end
+
+    RUNA["Phase A runner: GitHub-hosted<br/>SSH key in Secrets · ProxyJump via bastion"]:::auto
+    RUNB["Phase B runner: self-hosted ci-runner in VCN<br/>no inbound internet"]:::future
+    B7 --- RUNA
+    B7 -.- RUNB
+
+    subgraph APPS["k8s-lab-apps pipeline - application changes"]
+        direction TB
+        A1["Open PR - services/cart change"]:::git
+        A2["CI on PR: lint · unit tests · docker build - no push"]:::auto
+        A3["Merge to main"]:::git
+        A4["buildx arm64 image · tag = git SHA · push OCIR"]:::auto
+        A5["CI commits tag to envs/dev/cart.values.yaml"]:::auto
+        A1 --> A2 --> A3 --> A4 --> A5
+    end
+
+    subgraph GIT["k8s-lab-gitops - single source of truth"]
+        direction TB
+        GP["platform/ - Argo apps for<br/>istio · monitoring · ccm-csi<br/>upstream charts + our values"]:::git
+        G1["charts/app shared Helm chart<br/>envs/dev + envs/prod values<br/>argocd/ root-app + Applications"]:::git
+    end
+
+    subgraph CL["Cluster - Argo CD reconciles continuously"]
+        direction TB
+        C0["Argo syncs platform apps first<br/>on any rebuild everything returns from git<br/>= built-in DR rehearsal"]:::cluster
+        C1["Sync DEV: render chart with dev values<br/>rolling update in shop-dev"]:::cluster
+        C2["Verify at dev.LB-IP.nip.io + Grafana"]:::cluster
+        C3["PROMOTION PR: copy tested tag<br/>envs/dev → envs/prod · review · merge"]:::git
+        C4["Sync PROD - rollback = git revert"]:::cluster
+        C0 --> C1 --> C2 --> C3 --> C4
+    end
+
+    ROUND1 -.->|"knowledge becomes code"| B7
+    ROUND1 -.->|"platform installs become Argo apps"| GP
+    B8 --> C0
+    A5 --> G1
+    C3 --> G1
+    GP --> C0
+    G1 --> C1
+    G1 --> C4
+
+    RULE["Golden rules: no pipeline runs kubectl or helm at the cluster ·<br/>after Round 1 nothing in-cluster is hand-applied - platform = Argo apps ·<br/>nodes never configured from laptops · deployment and promotion are git commits"]:::dev
+    G1 -.- RULE

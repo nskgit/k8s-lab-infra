@@ -1,0 +1,41 @@
+# kubeadm worker join config — TEMPLATE. Rendered per-worker on the fly:
+#   sed 's/__NODE_IP__/10.0.2.230/; s/__TOKEN__/xxx/; s/__HASH__/sha256:yyy/' \
+#     JoinConfiguration-worker.template.yaml > /tmp/JoinConfiguration.yaml
+#   sudo kubeadm join --config=/tmp/JoinConfiguration.yaml
+#
+# Placeholders:
+#   __NODE_IP__  — this worker's private IP (10.0.2.x — from `terraform output worker_private_ips`)
+#   __TOKEN__    — bootstrap token from cp (`sudo kubeadm token create --print-join-command`)
+#   __HASH__     — full "sha256:..." discovery-token-ca-cert-hash from the same command
+#
+# Lessons wired in (see docs/PROJECT-PLAN-v3.md §9.7-9.8):
+#   - kubelet.cloud-provider=external (locked-decision #6)
+#   - kubelet.node-ip=<private-IP> — CCM+cloud-provider=external otherwise leave the
+#     node addressless (typha discovery breaks, kubectl logs/exec breaks)
+#   - controlPlaneEndpoint of cp is 10.0.1.209:6443 (single-cp today)
+#
+# NOTE: after each worker joins, immediately patch providerID (CCM's name→instance
+# lookup is unreliable):
+#   kubectl patch node <worker-name> -p '{"spec":{"providerID":"oci://<instance-ocid>"}}'
+# then CCM initializes addresses + topology labels + removes the uninitialized taint.
+
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "10.0.1.209:6443"
+    token: __TOKEN__
+    caCertHashes:
+      - "__HASH__"
+
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  # Leave taints unset (null = kubeadm defaults) — workers get no special taints,
+  # user workloads can schedule normally.
+  taints: null
+  kubeletExtraArgs:
+    - name: cloud-provider
+      value: external
+    - name: node-ip
+      value: "__NODE_IP__"

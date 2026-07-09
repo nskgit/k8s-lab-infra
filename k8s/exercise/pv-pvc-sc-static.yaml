@@ -1,0 +1,102 @@
+# =============================================================================
+# STATIC provisioning — you write StorageClass + PV + PVC + Pod, ALL explicitly.
+# The Block Volume must ALREADY exist in OCI; K8s just introduces it to the
+# cluster and lets a claim bind to it.
+#
+# When you'd use this pattern:
+#   - Adopting a pre-existing Block Volume (e.g. restored from a snapshot, or
+#     created by hand for a migration)
+#   - Advanced mount options that the default StorageClass can't express
+#   - Testing / learning
+# For everyday use — dynamic (pv-pvc-sc-dynamic.yaml) is the right pattern.
+#
+# BEFORE APPLYING you MUST replace <PUT-YOUR-BV-OCID-HERE> in the PV spec below
+# with the OCID of a Block Volume you created out-of-band, e.g.:
+#
+#   oci bv volume create \
+#     --compartment-id ocid1.compartment.oc1..aaaaaaaaflb6frgnzi5st4cyib4ephtvixgunefbs5bftjt6kzv5v5xlfcra \
+#     --availability-domain 'gwCv:US-ASHBURN-AD-1' \
+#     --display-name lab-static-demo \
+#     --size-in-gbs 50 --vpus-per-gb 0
+#
+# NOTE: the volume's AD must match the AD your Pod ends up in. `nodeSelector`
+# on the Pod (or WFFC on the SC) helps enforce this.
+# =============================================================================
+
+---
+# 1) StorageClass — but with a NO-OP provisioner (kubernetes.io/no-provisioner).
+#    This signals "static PVs only; do not dynamically create anything."
+#    It exists mainly so the PV and PVC can reference each other via a
+#    storageClassName and so the WFFC semantics still apply.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: oci-bv-static-demo
+provisioner: kubernetes.io/no-provisioner        # ← no auto-provisioning
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain                            # PVC delete → PV stays "Released";
+                                                 # volume in OCI is NOT deleted
+
+---
+# 2) PersistentVolume — YOU declare a specific piece of storage.
+#    This is the crucial difference from dynamic: you supply the volumeHandle
+#    (the OCID of the pre-existing OCI Block Volume).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-lab-static-demo
+spec:
+  capacity:
+    storage: 50Gi                                # must match the real volume size
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: oci-bv-static-demo
+  persistentVolumeReclaimPolicy: Retain
+  csi:
+    driver: blockvolume.csi.oraclecloud.com
+    volumeHandle: "<PUT-YOUR-BV-OCID-HERE>"      # ← REQUIRED — the real OCI volume OCID
+    fsType: ext4
+    volumeAttributes:
+      attachment-type: "paravirtualized"
+
+---
+# 3) PVC — the request. Because both PV and PVC name the same
+#    storageClassName ("oci-bv-static-demo") AND the sizes/access modes match,
+#    K8s pairs them.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: demo-static
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: oci-bv-static-demo
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# 4) Pod that consumes the PVC.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-static-writer
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: writer
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      echo "static demo — hello from $(hostname) at $(date -u)" >> /data/log.txt
+      echo "--- current contents of /data/log.txt ---"
+      cat /data/log.txt
+      echo "--- sleeping to keep pod around for inspection ---"
+      sleep 3600
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: demo-static

@@ -1,0 +1,87 @@
+# Phase 4 exercise — real-time PV/PVC/Block Volume flow via OCI CCM/CSI.
+#
+# What this exercises end-to-end (per PHASES-4-15-EXECUTION-PLAN.md §Phase 4):
+#   1. WaitForFirstConsumer: PVC stays Pending until the pod schedules onto a node
+#   2. CSI dynamic provisioning: the driver calls OCI, creates a Block Volume
+#      in the pod's AD, attaches it (paravirtualized), formats + mounts
+#   3. Persistence across pod delete/restart on the same node
+#   4. Persistence across NODE MOVE — cordon a node, delete pod, StatefulSet
+#      reschedules to the other worker, CSI detaches BV from worker A and
+#      re-attaches to worker B, mount comes up, data intact
+#   5. Online volume expand (patch PVC size, filesystem grows without downtime)
+#   6. reclaimPolicy: Delete — PVC delete → Block Volume TERMINATED in OCI
+#      (proves no orphan billing)
+#
+# Notes:
+#   - Postgres runs as a StatefulSet (not a Deployment) because we want stable
+#     identity + a volumeClaimTemplate that creates a per-replica PVC.
+#   - We use 5 Gi as the request, but OCI's minimum block volume is 50 GB —
+#     the driver silently rounds up. That's the lab-costing reality (≈$1.28/mo).
+#   - No Service (headless or otherwise) — for the exercise we exec directly
+#     into the pod. In real workloads you'd add both a headless Service (stable
+#     DNS per replica) and a regular ClusterIP for clients.
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: phase4-storage
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: phase4-storage
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # Postgres won't like sidecar containers or run-as-nonroot by default;
+      # keep the pod spec minimal for exercise clarity.
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: postgres
+        image: postgres:16-alpine     # multi-arch; runs on arm64 workers
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "labpass"            # obviously for lab only; real secrets in Phase 8+
+        - name: POSTGRES_DB
+          value: "labdb"
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - name: postgres
+          containerPort: 5432
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+          limits:
+            memory: "512Mi"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        # Simple readiness — pg_isready checks the local socket
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "postgres"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: oci-bv        # EXPLICIT — this is the whole point.
+                                       # default (local-path) would work but wouldn't
+                                       # demonstrate CCM/CSI or node-move persistence.
+      resources:
+        requests:
+          storage: 5Gi                 # OCI will round to 50 GB minimum

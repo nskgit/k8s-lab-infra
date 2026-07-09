@@ -1,0 +1,60 @@
+flowchart TB
+    classDef ext fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    classDef pub fill:#ffffff,stroke:#2e7d32,color:#1b5e20
+    classDef cpn fill:#ffffff,stroke:#1565c0,color:#0d47a1
+    classDef wkn fill:#ffffff,stroke:#4527a0,color:#311b92
+    classDef gw fill:#eceff1,stroke:#546e7a,color:#263238
+    classDef future fill:#eceff1,stroke:#607d8b,color:#37474f,stroke-dasharray:5 5
+
+    USER(("🌐 Internet users")):::ext
+    MAC["💻 MacBook<br/>ssh · kubectl tunnel · git"]:::ext
+    GH["GitHub<br/>infra · apps · gitops repos"]:::ext
+    OCISVC["OCI Services Network<br/>OCIR images · Object Storage tf-state<br/>Block Volume API for CSI"]:::ext
+
+    subgraph REGION["OCI PRIMARY REGION — DR region reserved: VCN 10.1.0.0/16, same modules"]
+        subgraph VCN["VCN k8s-lab — 10.0.0.0/16"]
+            IGW["Internet<br/>Gateway"]:::gw
+            NATG["NAT<br/>Gateway"]:::gw
+            SGW["Service<br/>Gateway"]:::gw
+
+            subgraph SNPUB["🌐 PUBLIC SUBNET 10.0.0.0/24 — route: 0.0.0.0/0 → Internet GW"]
+                LB["Flexible Load Balancer<br/>nsg-lb: IN 80,443 from 0.0.0.0/0"]:::pub
+                BAS["Bastion — reserved public IP<br/>nsg-bastion: IN 22 from your-IP/32"]:::pub
+            end
+
+            subgraph SNCP["🔒 PRIVATE CONTROL-PLANE SUBNET 10.0.1.0/24 — route: 0.0.0.0/0 → NAT GW"]
+                CP["control-plane-1 — nsg-cp<br/>kube-apiserver 6443 · etcd 2379-2380 self-only<br/>kubelet 10250 · scheduler · controller-mgr<br/>kubelet flag: cloud-provider=external"]:::cpn
+                CCM["OCI CCM + CSI driver pods<br/>auth: Instance Principals - no keys"]:::cpn
+            end
+
+            subgraph SNWK["🔒 PRIVATE WORKER SUBNET 10.0.2.0/24 — route: 0.0.0.0/0 → NAT GW"]
+                W1["worker-1 — nsg-workers<br/>kubelet 10250 · NodePorts 30080/30443"]:::wkn
+                W2["worker-2 — nsg-workers<br/>kubelet 10250 · NodePorts 30080/30443"]:::wkn
+                OVL["Cluster overlay spanning all nodes<br/>pods 10.244.0.0/16 Calico VXLAN · services 10.96.0.0/16 · CoreDNS<br/>Istio ingress gw + mesh · dev + prod namespaces<br/>monitoring · argocd · PVCs → OCI Block Volumes"]:::wkn
+                CIR["ci-runner — Phase B<br/>outbound-only to GitHub"]:::future
+            end
+        end
+    end
+
+    USER -->|"80/443 tcp"| IGW --> LB
+    LB -->|"30080/30443 tcp to nsg-workers"| SNWK
+    MAC -->|"ssh 22"| BAS
+    BAS -->|"ssh 22 to nsg-cp + nsg-workers"| SNCP
+    BAS -->|"ssh 22"| SNWK
+    MAC -.->|"kubectl 6443 via ssh tunnel"| CP
+
+    SNWK <-->|"cross-subnet NSG rules:<br/>workers→cp 6443 · cp→workers 10250<br/>VXLAN 4789/udp both ways"| SNCP
+
+    CCM -->|"create/attach volumes"| SGW
+    SNCP -.->|"egress"| NATG
+    SNWK -.->|"egress · Argo polls GitHub"| NATG
+    SNWK -.->|"image pulls · tf state"| SGW
+    SGW --- OCISVC
+    NATG -.-> GH
+    MAC -->|"git push"| GH
+
+    style REGION fill:#fafafa,stroke:#9e9e9e,stroke-dasharray:6 4
+    style VCN fill:#f5f7fa,stroke:#37474f,stroke-width:3px
+    style SNPUB fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style SNCP fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style SNWK fill:#ede7f6,stroke:#4527a0,stroke-width:2px

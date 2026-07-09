@@ -1,0 +1,29 @@
+# Custom oci-bv StorageClass for the lab. Do NOT apply the upstream storage-class.yaml
+# from oracle/oci-cloud-controller-manager — its defaults land on Balanced (67% more expensive)
+# and iSCSI (needs host iscsid). This one is deliberate and lab-friendly.
+#
+# Trade-offs baked in:
+#   vpusPerGB "0"             — Lower Cost tier, 2 IOPS/GB. IMMUTABLE post-provision; pick tier
+#                                before creating long-lived volumes. $0.0255/GB-mo storage only.
+#   attachment-type paravirt  — Avoids host iscsid dependency. A1.Flex-supported. Perf delta vs
+#                                iSCSI is irrelevant at the 0-VPU tier anyway.
+#   volumeBindingMode WFFC    — REQUIRED. OCI Block Volumes are AD-local; the CSI driver must
+#                                know which node the consumer pod schedules to so it provisions
+#                                the volume in the right AD. WFFC = provision at pod-schedule time.
+#   allowVolumeExpansion true — Online grow-only (OCI limitation). We'll demo this in Chunk C.
+#   reclaimPolicy Delete      — PVC delete → volume TERMINATED. Prevents orphan-billing on Phase
+#                                5/12 teardowns. `Retain` would leak volumes; do not use.
+#   NOT annotated as default  — Using this class must be explicit (`storageClassName: oci-bv`).
+#                                Default SC is `local-path` (below), which is $0 on boot slack.
+#                                Prevents accidents from Helm charts that omit storageClassName.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: oci-bv
+provisioner: blockvolume.csi.oraclecloud.com
+parameters:
+  vpusPerGB: "0"
+  attachment-type: "paravirtualized"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
