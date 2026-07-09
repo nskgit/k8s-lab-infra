@@ -1,0 +1,8 @@
+---
+# kubernetes-packages — Phase 5a stub. Real tasks in block 7:
+#   pkgs.k8s.io {{ kubernetes_repo_minor }} repo, kubelet/kubeadm/kubectl
+#   pinned to {{ kubernetes_version }}, versionlock, SELinux permissive,
+#   kubelet enabled (started by kubeadm init/join).
+- name: kubernetes-packages — placeholder
+  ansible.builtin.debug:
+    msg: "role kubernetes-packages not yet implemented"

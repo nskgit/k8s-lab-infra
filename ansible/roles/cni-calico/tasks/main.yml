@@ -1,0 +1,8 @@
+---
+# cni-calico — Phase 5a stub. Real tasks in block 8:
+#   Tigera operator {{ tigera_operator_version }} manifest, Installation CR
+#   ({{ calico_encapsulation }}, bgp {{ calico_bgp }}, canReach
+#   {{ calico_can_reach }}), wait for status Available.
+- name: cni-calico — placeholder
+  ansible.builtin.debug:
+    msg: "role cni-calico not yet implemented"

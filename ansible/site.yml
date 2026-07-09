@@ -1,0 +1,29 @@
+---
+# Phase 5 playbook — codifies "cluster exists and is schedulable"
+# (Ansible ownership per D3/D15). Argo bootstrap deferred to Phase 8.
+
+- name: Base OS + runtime + k8s packages (all nodes)
+  hosts: k8s_nodes
+  become: true
+  gather_facts: true
+  roles:
+    - common
+    - containerd
+    - kubernetes-packages
+
+- name: Control-plane init + CNI + cloud providers
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  roles:
+    - kubeadm-cp
+    - cni-calico
+    - oci-ccm
+    - oci-csi
+
+- name: Workers join
+  hosts: workers
+  become: true
+  gather_facts: true
+  roles:
+    - kubeadm-worker

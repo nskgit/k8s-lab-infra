@@ -1,0 +1,7 @@
+---
+# common — Phase 5a stub. Real tasks in block 7:
+#   kernel modules (overlay, br_netfilter), sysctls (bridge-nf-call, ip_forward),
+#   swap off, firewalld disabled.
+- name: common — placeholder
+  ansible.builtin.debug:
+    msg: "role common not yet implemented"

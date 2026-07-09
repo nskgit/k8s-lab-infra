@@ -1,0 +1,8 @@
+---
+# kubeadm-cp — Phase 5a stub. Real tasks in block 8:
+#   Jinja2 ClusterConfiguration.yaml (node-ip, providerID from IMDS,
+#   apiserver certSANs, controlPlaneEndpoint), idempotency guard on
+#   /etc/kubernetes/admin.conf, kubeadm init, fetch admin.conf to controller.
+- name: kubeadm-cp — placeholder
+  ansible.builtin.debug:
+    msg: "role kubeadm-cp not yet implemented"

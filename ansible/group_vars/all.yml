@@ -1,0 +1,35 @@
+---
+# ─────────────────────────────────────────────────────────────────────────
+# Single source of truth for every pinned version. Roles reference these
+# vars — do not hardcode versions in a role.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Kubernetes control plane / kubelet / kubectl
+kubernetes_version:        "1.33.13"       # -> repo pkg pin 1.33.13-*
+kubernetes_repo_minor:     "v1.33"         # pkgs.k8s.io channel
+
+# Container runtime
+containerd_version:        "2.2.5"         # from Docker CE repo
+
+# CNI
+calico_version:            "v3.28.2"       # projectcalico/calico release
+tigera_operator_version:   "v1.34.5"       # operator image tag
+calico_encapsulation:      "VXLAN"         # Installation CR
+calico_bgp:                "Disabled"
+calico_can_reach:          "10.0.0.1"      # nodeAddressAutodetection.canReach
+
+# OCI cloud providers
+oci_ccm_version:           "v1.33.2"       # ghcr.io/oracle/cloud-provider-oci
+oci_csi_version:           "v1.33.2"       # same image tag
+snapshotter_crds_version:  "v6.3.4"        # kubernetes-csi/external-snapshotter CRD release
+
+# Cluster networking — MUST match kubeadm/ClusterConfiguration.yaml
+cluster_name:              "k8s-lab"
+pod_subnet:                "10.244.0.0/16"
+service_subnet:            "10.96.0.0/16"
+apiserver_advertise_ip:    "10.0.1.209"   # TODO D9: pin cp IP at first rebuild
+control_plane_endpoint:    "10.0.1.209:6443"
+
+# OCI Instance Metadata Service — provider-id at registration (D6).
+# Note the -H 'Authorization: Bearer Oracle' header required by IMDSv2.
+imds_instance_id_url:      "http://169.254.169.254/opc/v2/instance/id"

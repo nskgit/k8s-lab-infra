@@ -1,0 +1,8 @@
+---
+# oci-ccm — Phase 5a stub. Real tasks in block 9:
+#   cloud-provider.yaml Secret (compartment/vcn/public_subnet from TF outputs,
+#   useInstancePrincipals=true), apply CCM {{ oci_ccm_version }} manifests,
+#   wait for DaemonSet Ready + all nodes to have spec.providerID populated.
+- name: oci-ccm — placeholder
+  ansible.builtin.debug:
+    msg: "role oci-ccm not yet implemented"

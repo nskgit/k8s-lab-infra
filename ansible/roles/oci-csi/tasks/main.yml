@@ -1,0 +1,10 @@
+---
+# oci-csi — Phase 5a stub. Real tasks in block 9:
+#   external-snapshotter CRDs {{ snapshotter_crds_version }} FIRST,
+#   oci-volume-provisioner Secret (config.yaml key), apply CSI
+#   {{ oci_csi_version }} manifests (optional FSS/Lustre trim),
+#   oci-bv StorageClass + local-path-provisioner (default),
+#   wait for controller + node DaemonSet Ready.
+- name: oci-csi — placeholder
+  ansible.builtin.debug:
+    msg: "role oci-csi not yet implemented"

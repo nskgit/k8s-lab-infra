@@ -1,0 +1,8 @@
+---
+# containerd — Phase 5a stub. Real tasks in block 7:
+#   Docker CE dnf repo, containerd.io = {{ containerd_version }}, config.toml
+#   with SystemdCgroup=true (must match kubelet cgroupDriver: systemd),
+#   service enabled + started.
+- name: containerd — placeholder
+  ansible.builtin.debug:
+    msg: "role containerd not yet implemented"

@@ -1,0 +1,9 @@
+---
+# kubeadm-worker — Phase 5a stub. Real tasks in block 10:
+#   delegate_to cp: kubeadm token create --print-join-command,
+#   Jinja2 JoinConfiguration.yaml (node-ip from facts, providerID from IMDS),
+#   idempotency guard on /etc/kubernetes/kubelet.conf, kubeadm join,
+#   wait for node Ready from cp's kubeconfig.
+- name: kubeadm-worker — placeholder
+  ansible.builtin.debug:
+    msg: "role kubeadm-worker not yet implemented"
