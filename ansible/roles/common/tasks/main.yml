@@ -1,7 +1,76 @@
 ---
-# common — Phase 5a stub. Real tasks in block 7:
-#   kernel modules (overlay, br_netfilter), sysctls (bridge-nf-call, ip_forward),
-#   swap off, firewalld disabled.
-- name: common — placeholder
-  ansible.builtin.debug:
-    msg: "role common not yet implemented"
+# common — OS prep required before any container runtime or kubelet exists.
+#
+# Idempotent: safe to re-run against already-prepared nodes; reports
+# "changed" only when actual state differs from desired.
+#
+# Scope: k8s-agnostic OS knobs. Anything CNI-specific (like NetworkManager
+# exclusions for calico interfaces) belongs in cni-calico, not here.
+
+# ── Kernel modules ─────────────────────────────────────────────────────────
+- name: Persist k8s kernel modules across reboots
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Load kernel modules now (overlay, br_netfilter)
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+# ── sysctls ────────────────────────────────────────────────────────────────
+# ansible.posix.sysctl handles both dimensions in one shot: writes to the
+# specified file (persistent) AND applies to the running kernel via
+# /proc/sys (immediate). Explicit sysctl_file avoids the module's default
+# of /etc/sysctl.conf, which would duplicate settings across two files.
+- name: Apply k8s sysctls (persistent + running kernel)
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-k8s.conf
+    sysctl_set: true
+    state: present
+    reload: true
+  loop:
+    - { name: net.bridge.bridge-nf-call-iptables,  value: "1" }
+    - { name: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+    - { name: net.ipv4.ip_forward,                 value: "1" }
+
+# ── Swap off (kubelet refuses to start with swap on) ───────────────────────
+- name: Check if any swap is currently on
+  ansible.builtin.command: swapon --noheadings --show
+  register: swap_status
+  changed_when: false
+  check_mode: false
+
+- name: Disable swap for the running session
+  ansible.builtin.command: swapoff -a
+  when: swap_status.stdout | length > 0
+
+- name: Comment out swap entries in /etc/fstab so swap stays off on reboot
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\s+swap\s+.*)$'
+    replace: '# \1'
+
+# ── firewalld off (kube-proxy owns iptables) ───────────────────────────────
+- name: Detect firewalld unit file
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/system/firewalld.service
+  register: firewalld_unit
+
+- name: Ensure firewalld is stopped, disabled, and masked
+  ansible.builtin.systemd:
+    name: firewalld
+    state: stopped
+    enabled: false
+    masked: true
+  when: firewalld_unit.stat.exists
