@@ -53,17 +53,190 @@ Wired inline as part of Phase 2 (`~/.ssh/config` with ProxyJump through bastion 
 
 **Learning captured about the CSI + StatefulSet model:** 1 PVC per replica via `volumeClaimTemplate` → 1 PV → 1 OCI Block Volume with stable identity that follows the pod across node moves. This is why StatefulSets (not Deployments) are the pattern for anything with durable state.
 
-## Phase 5 — ROUND 2 codify: Ansible from CI, destroy → rebuild via pipeline
+## Phase 5a — Round 2 codify: 8 Ansible roles, fully idempotent ✅
 
-_TBD_
+Completed 2026-07-09/10. Everything hand-executed in Phases 0–4 is now
+declared in code. Repository first committed and pushed to GitHub
+(`nskgit/k8s-lab-infra`) at the start of the phase — the "one laptop
+away from oblivion" era ended.
+
+**Pre-work** (`faa547a`):
+1. **First commit + push to GitHub** — repo had zero commits before this.
+2. **Dual Terraform provider bug fix** — every module implicitly bound
+   to `hashicorp/oci` 8.21.0 while root used `oracle/oci` 6.37. Added
+   `versions.tf` to all 4 modules; ran `terraform state replace-provider
+   registry.terraform.io/hashicorp/oci registry.terraform.io/oracle/oci`
+   to migrate ~40 module-owned state resources. `terraform providers`
+   now shows a single namespace.
+3. **Deleted stale `errored.tfstate`** (108 KB, 43 resources, Day 1
+   chunked-encoding incident).
+4. **Added 3 TF outputs** (`compartment_ocid`, `vcn_id`,
+   `public_subnet_id`) that the Ansible CCM role reads.
+
+**Scaffolding** (`d7c9dd2`):
+5. `ansible/ansible.cfg` — `roles_path`, `inventory`, `pipelining`,
+   `ControlMaster` (later fixed: `stdout_callback = default` +
+   `result_format = yaml` because `community.general.yaml` callback was
+   removed in v12).
+6. `ansible/group_vars/all.yml` — single source of truth for every
+   pinned version (k8s 1.33.13, containerd 2.2.5, Calico v3.28.2 +
+   Tigera v1.34.5, OCI CCM/CSI v1.33.2, snapshotter CRDs v6.3.4). All
+   values verified against the live cluster before pinning.
+7. `ansible/inventory/hosts.ini` — static for 5a (dynamic inventory
+   deferred to Block 11); ProxyJump via bastion reserved IP; 3 nodes
+   grouped as `k8s_nodes` (parent of `control_plane` + `workers`).
+8. `ansible/site.yml` — 3 plays ordered by D3/D15 ownership: play 1
+   base OS + runtime + k8s pkgs on all nodes; play 2 kubeadm-cp →
+   cni-calico → oci-ccm → oci-csi on cp (CCM before CSI so untaint
+   happens first, then CSI controller can schedule); play 3
+   kubeadm-worker on workers. 8 role stubs with header docs.
+
+**Base roles** (`d5ec6ad`) — `common`, `containerd`, `kubernetes-packages`:
+9. Kernel modules (`overlay`, `br_netfilter`) persisted via
+   `/etc/modules-load.d/`, loaded via `community.general.modprobe`.
+10. Sysctls via `ansible.posix.sysctl` writing to
+    `/etc/sysctl.d/99-k8s.conf` — one loop, no duplicate writes to
+    `/etc/sysctl.conf`.
+11. Swap off (fstab regex commented `swap` entries; `swapoff -a`
+    guarded by `swapon --show` output).
+12. firewalld stopped + disabled + **masked** (mask survives `systemctl
+    enable` scripts).
+13. containerd installed from Docker CE repo (fetched Docker's official
+    `docker-ce.repo` via `get_url` — matches `dnf config-manager --add-repo`
+    output; simpler `yum_repository` produced format drift).
+    `containerd config default | sed SystemdCgroup=true` written with
+    trailing newline; handler restarts on config change.
+14. `pkgs.k8s.io` v1.33 repo with **upstream-standard `exclude=` line +
+    `disable_excludes: kubernetes` on install** (belt+suspenders vs.
+    stray `dnf install kubelet`). kubelet/kubeadm/kubectl 1.33.13
+    installed and versionlocked via `community.general.dnf_versionlock`.
+    versionlock task guarded `when: not ansible_check_mode` (check mode
+    can't simulate the plugin install prior task).
+
+**kubeadm-cp + cni-calico** (`f2e7d1b`):
+15. **kubeadm-cp** — templates `ClusterConfiguration.yaml` from Jinja2,
+    pulling the OCI instance OCID from **IMDSv2** at run-time to inject
+    `provider-id: oci://<ocid>` into kubelet extraArgs (D6 — kills the
+    Phase 2 post-init `kubectl patch` step; providerID is set at
+    kubelet-registration time, no CCM race window). Idempotency guard
+    on `/etc/kubernetes/admin.conf` — every destructive task skips on
+    an already-initialized cp. Fetches admin.conf to `~/.kube/config-lab`.
+16. **cni-calico** — Tigera operator v1.34.5 downloaded from upstream
+    (stat-guarded), applied with `--server-side --force-conflicts` (SSA
+    ownership migration from Phase 2's `kubectl-create` field manager).
+    Minimal templated `Installation` CR — operator's mutating admission
+    fills defaults invisible to `kubectl apply` drift detection.
+    `kubectl wait` for `installation/default` Ready.
+
+**oci-ccm + oci-csi** (`4fdd8f5`):
+17. **oci-ccm** — reads TF outputs via `delegate_to: localhost` shell
+    (`become: false` to skip Mac sudo password prompt). Templates
+    `oci-cloud-controller-manager` Secret with
+    `useInstancePrincipals: true`. Downloads exactly 2 release
+    manifests (`oci-cloud-controller-manager.yaml` +
+    `oci-cloud-controller-manager-rbac.yaml`) — verified via
+    `api.github.com/.../releases/tags/v1.33.2`; my earlier plan notes
+    listed a nonexistent third file. Waits for DaemonSet rollout
+    AND for every node's `spec.providerID` to be populated.
+18. **oci-csi** — same TF-outputs pattern (defensive re-read). Applies
+    VolumeSnapshot CRDs FIRST (without them the CSI controller's
+    csi-snapshotter sidecars crashloop). Separate `oci-volume-provisioner`
+    Secret (different envelope from CCM's — CSI does not read CCM's
+    secret; upstream idiosyncrasy). oci-bv StorageClass copied from
+    `k8s/storage/` (single source of truth). local-path v0.0.31
+    installed + marked default via `kubectl annotate` guarded by a
+    pre-check reading the current annotation (kubectl annotate always
+    outputs "annotated" — output-based idempotency doesn't work).
+
+**kubeadm-worker** (`af6a1dc`) — the last role:
+19. **kubeadm-worker** — stat guard on
+    `/etc/kubernetes/kubelet.conf` (all destructive tasks skip on
+    joined workers). Mints a fresh 10-min token via
+    `kubeadm token create --print-join-command --ttl 10m` **delegated
+    to control-plane-1** every playbook run — nothing persisted.
+    Parses stdout regex for token + `sha256:` hash. Jinja2
+    `JoinConfiguration.yaml` with `providerID` from IMDSv2 same
+    as cp. Waits for the node to reach Ready from cp's kubeconfig.
+
+**Verification standard adopted throughout:** for every role block —
+1. `ansible-playbook site.yml --check --diff` (dry-run against live
+   cluster) → inspect changed tasks, fix any drift.
+2. `ansible-playbook site.yml` (real apply) → takes ownership of any
+   pre-existing manually-applied resources (SSA with `--force-conflicts`).
+3. `ansible-playbook site.yml --check --diff` again → target
+   `changed=0, failed=0`. The strongest possible proof of idempotency.
+
+Every commit above passed the third check. Cluster remained Ready
+v1.33.13 throughout.
+
+**Deferred and tracked** (not part of 5a graduation, see
+`CURRENT-STATE.md`):
+- Phase 5b — workers → instance pool, join-command vending
+- Block 11 — CI/CD workflow (industry-standard PR pipeline)
+- Dynamic inventory swap
+- `kubernetes.core.k8s` module vs `command: kubectl apply`
+- `kubeadm-config` ConfigMap patch as Ansible task
 
 ## Phase 6 — Istio + Gateway API, LB wiring, nip.io hosts
 
-_TBD_
+_TBD (deferred behind Phase 7 observability per user direction — get
+metrics visibility first, then service mesh)_
 
-## Phase 7 — kube-prometheus-stack + Kiali + Alertmanager
+## Phase 7 — kube-prometheus-stack + Alertmanager + Grafana
 
-_TBD_
+**Pre-work complete** (`3c430d0`, 2026-07-10):
+
+1. **KCM + scheduler bind-address = 0.0.0.0** (the kubespray-standard
+   fix, done the kubeadm-documented way in three layers):
+   - `kubeadm/ClusterConfiguration.yaml` + Ansible j2 template updated
+     with `controllerManager.extraArgs: bind-address=0.0.0.0` and a new
+     `scheduler.extraArgs` block → fresh rebuilds are born correct.
+   - `kubeadm-config` ConfigMap in `kube-system` patched via a one-off
+     Python script (pyyaml-based structural edit; scratchpad) → future
+     `kubeadm upgrade` re-renders manifests WITH the flag instead of
+     reverting it.
+   - `kubeadm-cp` role has two idempotent `ansible.builtin.replace`
+     tasks that flip the live static-pod manifests — config management
+     executes the change, not a human in vi. Kubelet auto-restarted
+     both pods (~20s KCM/scheduler blip on single cp; zero workload
+     impact).
+   - Verified: `ss -tlnp` shows `*:10257 kube-controller` and `*:10259
+     kube-scheduler`; worker `curl -sk https://cp:10257/metrics` returns
+     403 (TLS + RBAC authn active, anonymous rejected — production
+     posture).
+
+2. **4 NSG rules added** (`terraform plan` showed exactly `+4 add, 0
+   change, 0 destroy`):
+   - `cp_in_kcm_workers` — worker → cp:10257
+   - `cp_in_scheduler_workers` — worker → cp:10259
+   - `cp_in_node_exporter_workers` — worker → cp:9100 (node-exporter
+     DaemonSet tolerates cp taint)
+   - `workers_in_node_exporter_self` — worker → other-worker:9100
+   - kubelet 10250 rules already existed from the original matrix.
+   - etcd 2381 + kube-proxy 10249 stay closed (ServiceMonitors disabled
+     by plan; NSG rule + values flip both trivially reversible).
+
+3. **Bonus fix**: `cni-calico` role's tigera-operator manifest download
+   is now stat-guarded — `get_url` in `--check` reported would-download
+   without verifying bytes; every subsequent check falsely showed
+   changed=1 without this guard.
+
+4. `k8s/observability/kps-values.yaml` written (180 lines) with sizing,
+   storage rationale, scrape target selection, Alertmanager routing
+   tree (null-receiver for now; Slack webhook in P7-5), Grafana
+   persistence off + ConfigMap sidecar loading, admin creds via
+   pre-created Secret.
+
+**Install pending** — resume from `CURRENT-STATE.md` "Where we paused"
+steps 1–6:
+- Add helm repo, pin chart version.
+- Namespace + Grafana admin Secret.
+- `helm upgrade --install kps` (~2 min rollout).
+- Port-forward Prometheus UI, verify all scrape targets `up`.
+- metrics-server (P7-4), Alertmanager Slack wiring (P7-5), Grafana
+  port-forward + dashboards (P7-6).
+
+Then Phase 7b (Loki + Fluent Bit).
 
 ## Phase 8 — Argo CD + root-app; platform adopted as Argo apps
 

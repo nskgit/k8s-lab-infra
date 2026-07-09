@@ -1,35 +1,35 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-07-09 end-of-session — Phase 4 complete → Phase 5 next.
+**Last updated:** 2026-07-10 end-of-day — Phase 5a complete + Phase 7 pre-work
+(bind-address + NSG rules) applied. **Resume with the kube-prometheus-stack
+helm install** (steps in "Where we paused" below).
 
 Read this file FIRST if you're a new session or coming back after a break.
-This is the single anchor point. The full plan is in the other docs; this file
-tells you exactly what to do next.
+This is the single anchor point. Full plan is in `docs/PROJECT-PLAN-v3.md`
+and `docs/PHASES-4-15-EXECUTION-PLAN.md`; this file tells you exactly what
+to do next.
 
 ---
 
 ## How to open a new Claude Code session from here
 
-Claude Code sessions have no cross-session chat memory — each new session starts
-fresh. But what survives:
+Claude Code sessions have no cross-session chat memory — each new session
+starts fresh. But what survives:
 
 - Everything on disk (this repo, `~/.k8s-lab-secrets/`, `~/.ssh/config`, `~/.oci/`)
 - All `memory/*.md` files at
   `~/.claude/projects/-Users-satheshkumarnapoleon-workspace-project/memory/` —
-  they auto-load on every response, so you never "forget" them
-- `MEMORY.md` in that same dir — the index of what's in memory
+  auto-load on every response (indexed in `MEMORY.md` there)
+- `~/.kube/config-lab` — admin.conf fetched from cp by Ansible
 
 **To start a new session:**
-1. Open Claude Code in this same working directory (`~/workspace/project` or the
-   repo root — the memory system points at the project regardless).
-2. As your first message, paste something like:
+1. Open Claude Code in `~/workspace/k8s-lab-infra`.
+2. First message:
 
-> Read `~/workspace/k8s-lab-infra/docs/CURRENT-STATE.md` and
-> `~/workspace/k8s-lab-infra/docs/PHASES-4-15-EXECUTION-PLAN.md` §Phase 5.
-> Phase 4 is done. Resume from Phase 5 Step 0 pre-work.
-
-The memory files auto-load. The plan file (`PHASES-4-15-EXECUTION-PLAN.md`)
-tells the new session exactly what Phase 5 needs. This file is the pointer.
+> Read `docs/CURRENT-STATE.md`, `docs/PHASES-4-15-EXECUTION-PLAN.md` §Phase 7,
+> and `docs/LEARNING-LOG.md` section 7. Phase 5a is complete, Phase 7
+> pre-work is done. Resume from the kube-prometheus-stack helm install
+> (P7-3 step 1 through 6).
 
 ---
 
@@ -37,226 +37,245 @@ tells the new session exactly what Phase 5 needs. This file is the pointer.
 
 | # | Phase | State |
 |---|---|---|
-| 0-4 | Foundation, TF infra, kubeadm, CCM, CSI, PV/PVC exercise | ✅ **done** — see `PHASES-COMPLETED.md` |
-| **5** | **Round 2 codify (Ansible + CI)** | 🚧 **next** |
-| 6 | Istio + Gateway API + LB TCP:443 | ⏳ |
-| 7 + 7b | kube-prometheus-stack + Loki/Fluent Bit | ⏳ |
-| 8 | Argo CD adoption | ⏳ |
+| 0-4 | Foundation, TF infra, kubeadm, CCM, CSI, PV/PVC exercise | ✅ done |
+| **5a** | **Round 2 codify — 8 Ansible roles fully idempotent against live cluster** | ✅ **done** |
+| 5b | Workers → instance pool + join-vending | ⏳ deferred (no immediate consumer; Phase 15 dep) |
+| **7 pre-work** | **bind-address=0.0.0.0 + 4 NSG rules** | ✅ **done** |
+| **7 install** | **kube-prometheus-stack + metrics-server** | ⏭️ **RESUME HERE** |
+| 7b | Loki + Fluent Bit + Grafana Loki datasource | ⏳ after 7 |
+| 6 | Istio + Gateway API + LB TCP:443 | ⏳ after 7b |
+| 8 | Argo CD adoption of platform | ⏳ |
+| Block 11 | CI workflow (industry-standard PR→plan→apply) | ⏳ deferred |
 | 9-11 | Wave-1/2 apps + promotion | ⏳ |
 | 12 | k6 + chaos + teardown/rebuild rehearsal | ⏳ |
 | 13-15 | ci-runner, DR drills, stretch | ⏳ |
 
-**Done: 5 phases. Remaining: 11.** Realistic remaining effort: a day or two.
+---
+
+## Where we paused (2026-07-10 evening)
+
+**Phase 7 pre-work is complete and pushed** (commit `3c430d0`):
+- KCM `:10257` and scheduler `:10259` bind `0.0.0.0` (verified via `ss` on
+  cp; verified via worker `curl` returning 403 = TLS+RBAC authn active).
+- `kubeadm-config` ConfigMap patched (via one-off Python script in
+  scratchpad — not codified in Ansible; fresh rebuilds don't need it
+  because kubeadm init regenerates the CM from our fixed template).
+- 4 NSG rules added (workers → cp:10257, cp:10259, cp:9100; workers ↔
+  workers:9100).
+- Ansible roles updated: `kubeadm-cp` has idempotent `replace` tasks for
+  both manifests; git ClusterConfiguration.yaml + j2 template both
+  updated so rebuilds are born correct.
+- Bonus fix: `cni-calico` role has a stat-guard on the tigera-operator
+  manifest download (get_url in --check reported would-download without
+  verifying bytes).
+
+**Values file written and ready for tomorrow:** `k8s/observability/kps-values.yaml`
+(180 lines). Includes sizing, storage note (local-path vs oci-bv), scrape
+targets (kubelet/apiserver/coredns/KCM/scheduler/node-exporter/kube-state
+ON; kubeEtcd/kubeProxy OFF), Grafana persistence off + ConfigMap sidecar
+loading, Alertmanager with null-receiver for now (Slack webhook wired in
+P7-5 as separate reviewable diff).
+
+### Resume steps (run tomorrow morning from Mac)
+
+Full commands with rationale live in the chat transcript, but here's the
+minimum to re-orient:
+
+```bash
+# 0. sanity: cluster reachable, no drift
+kubectl get nodes
+cd ~/workspace/k8s-lab-infra/ansible && \
+  source ~/.k8s-lab-secrets/state-backend.env && \
+  ansible-playbook site.yml --check --diff | tail -6
+# Expect: changed=0, failed=0 across all 3 nodes.
+
+# 1. add helm repo
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update prometheus-community
+
+# 2. pin chart version — pick latest 65.x from search output
+helm search repo prometheus-community/kube-prometheus-stack --versions | head -3
+export KPS_VERSION=<paste-latest-65.x>
+
+# 3. namespace + admin secret (idempotent)
+kubectl create ns monitoring --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n monitoring create secret generic grafana-admin \
+  --from-literal=admin-user=admin \
+  --from-literal=admin-password="$(openssl rand -base64 24)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n monitoring get secret grafana-admin \
+  -o jsonpath='{.data.admin-password}' | base64 -d > ~/.k8s-lab-secrets/grafana-admin-password
+chmod 600 ~/.k8s-lab-secrets/grafana-admin-password
+
+# 4. install (pinned, our values)
+helm upgrade --install kps prometheus-community/kube-prometheus-stack \
+  --version "$KPS_VERSION" \
+  --namespace monitoring \
+  -f ~/workspace/k8s-lab-infra/k8s/observability/kps-values.yaml \
+  --wait --timeout 8m
+
+# 5. verify pods + scrape targets (all 'up', especially KCM + scheduler)
+kubectl -n monitoring get pods
+kubectl -n monitoring port-forward svc/kps-kube-prometheus-prometheus 9090:9090 &
+PF=$!
+sleep 3
+curl -s http://localhost:9090/api/v1/targets | \
+  python3 -c 'import json,sys; d=json.load(sys.stdin); [print(f"{t[\"labels\"][\"job\"]:35s} {t[\"health\"]}") for t in d["data"]["activeTargets"]]' | sort -u
+kill $PF
+```
+
+**After the install lands**: P7-4 (metrics-server), P7-5 (Alertmanager
+Slack webhook + routing tree walkthrough), P7-6 (Grafana port-forward
+access), then commit + push all Phase 7 additions.
 
 ---
 
-## Phase 5 — do these first (in order)
+## Phase 5a — what's on disk (all committed + pushed to `origin/main`)
 
-Full spec is in `docs/PHASES-4-15-EXECUTION-PLAN.md §Phase 5`. Below is the
-pre-work sequence — get these four done BEFORE writing Ansible roles.
+Commits (in order):
 
-### 1. `git commit` + push to GitHub (blocker for any of the others)
+| Commit | Content |
+|---|---|
+| `faa547a` | Phase 5 pre-work: initial push, oracle/oci provider fix, errored.tfstate deleted, 3 TF outputs added |
+| `d7c9dd2` | Ansible scaffolding: ansible.cfg, group_vars/all.yml, inventory/hosts.ini, site.yml, 8 role stubs |
+| `d5ec6ad` | Base roles: common, containerd, kubernetes-packages (idempotent, changed=0 on live cluster) |
+| `f2e7d1b` | Phase 5a: kubeadm-cp + cni-calico roles (Jinja2 ClusterConfiguration, Tigera operator via SSA) |
+| `4fdd8f5` | Phase 5a: oci-ccm + oci-csi roles (TF-outputs plumbing, snapshotter CRDs first, local-path default) |
+| `af6a1dc` | Phase 5a: kubeadm-worker role (10-min token via delegate_to cp, IMDSv2 provider-id, stat guard) |
+| `3c430d0` | Phase 7 pre-work: KCM/scheduler bind-address + 4 NSG rules + cni-calico stat-guard fix |
 
-The repo has ZERO commits. Everything lives on one laptop right now.
-Everything Phase 0-4 built is a laptop disk failure away from oblivion.
-
-- `git add -A && git commit -m "phase 0-4"`
-- Create the `k8s-lab-infra` repo on GitHub (private is fine)
-- `git remote add origin <url> && git push -u origin master`
-- `gh` CLI is not installed on the Mac — do it via web UI, or `brew install gh`
-
-### 2. Fix the dual-Terraform-provider bug
-
-Every module binds to implicit `hashicorp/oci` 8.21.0 instead of `oracle/oci`
-6.37 (the root's real provider). Works locally by accident because ambient
-`~/.oci/config` auto-configures both; breaks headless CI.
-
-Add `versions.tf` to all four modules (`network`, `cluster-node`, `lb`,
-`iam-ccm`) and to `bootstrap/`:
-
-```
-terraform {
-  required_providers {
-    oci = {
-      source  = "oracle/oci"
-      version = "~> 6.0"
-    }
-  }
-}
-```
-
-Then `terraform init -upgrade` and confirm `terraform providers` shows a single
-namespace. `terraform plan` on `primary/` should be a no-op.
-
-### 3. Delete stale `terraform/primary/errored.tfstate`
-
-The 108 KB file left from the chunked-encoding incident on Day 1. Not in state,
-gitignored, but a wrong `terraform state push` would resurrect the duplicated-
-resources era. Confirm remote state has ~50 resources first, then:
-
-```
-rm -v ~/workspace/k8s-lab-infra/terraform/primary/errored.tfstate
-```
-
-### 4. Add missing Terraform outputs
-
-Phase 5's Ansible CCM role needs three OCIDs from Terraform that aren't
-currently in `primary/outputs.tf`:
-
-```hcl
-output "compartment_ocid"  { value = var.compartment_ocid }
-output "vcn_id"            { value = module.network.vcn_id }
-output "public_subnet_id"  { value = module.network.public_subnet_id }
-```
-
-The network module already exposes these — just need to re-expose from the
-root so `terraform output -json` (which Ansible inventory reads) sees them.
+**Idempotency evidence**: after each block, `ansible-playbook site.yml
+--check --diff` reports `changed=0, failed=0` on all 3 nodes. Real
+apply → subsequent `--check` = zero drift.
 
 ---
 
-## Phase 5 proper — the Ansible role plan (after pre-work)
+## Deferred items (tracked, not lost)
 
-Ordered role list (single-sourced version pins in `ansible/group_vars/all.yml`):
+- **Phase 5b — workers → instance pool + join-vending**. Autoscaling
+  prereq (Phase 15). Live-cluster refactor (destroys named workers). Not
+  needed for any immediate phase. Design in
+  `docs/PHASES-4-15-EXECUTION-PLAN.md §Phase 5 part 5b`.
 
-1. `common` — kernel modules, sysctls, swap off, firewalld off
-2. `containerd` — Docker CE yum repo, `SystemdCgroup = true`
-3. `kubernetes-packages` — 1.33.13 pinned, upstream repo, SELinux permissive
-4. `kubeadm-cp` — Jinja2-templated `ClusterConfiguration.yaml`, guarded on
-   existence of `/etc/kubernetes/admin.conf`
-5. `cni-calico` — Tigera Operator + `Installation` CR (VXLAN, `bgp: Disabled`,
-   `canReach: 10.0.0.1`) — the operator + CRs, no live `kubectl patch`
-6. `oci-ccm` — templates the `cloud-provider.yaml` Secret from TF outputs,
-   applies the CCM manifests from the OCI release URL matching K8s minor
-7. `oci-csi` — mirror of the above; the second Secret name is
-   `oci-volume-provisioner` with key `config.yaml`; snapshot CRDs first
-8. `kubeadm-worker` — Jinja2 `JoinConfiguration.yaml`, uses IMDS at
-   `http://169.254.169.254/opc/v2/instance/id` (with `Authorization: Bearer
-   Oracle` header) to render `provider-id: oci://<ocid>` into kubelet extra
-   args at registration time — no more manual patching
-9. `argo-bootstrap` — Argo install + `root-app.yaml`; also owns bootstrap
-   secrets (OCIR pull creds, Argo repo creds) — see D4 in the execution plan
+- **Block 11 — CI/CD workflow** (industry-standard PR-driven pipeline).
+  User explicitly deferred to have a full design session when we get to
+  it. Would include:
+  - Dynamic inventory (`inventory/tf.py` reading `terraform output -json`,
+    or `oracle.oci` plugin for 5b instance pool)
+  - `Makefile` for both dev and CI (`make apply/check/rebuild/destroy`)
+  - `.github/workflows/{ci,apply,rebuild}.yml`
+  - Cloud-init boot-finished `wait_for` in site.yml pre_tasks
+  - cp private IP pinning (D9 in the plan — defer real change to first
+    rebuild rehearsal)
+  - Environment-gated apply with required reviewer
 
-### CI workflow specifics
+- **`kubernetes.core.k8s` module swap**. Currently using
+  `command: kubectl apply` in cni-calico/oci-ccm/oci-csi. Cleaner
+  option = `kubernetes.core.k8s` (native check-mode + drift tracking).
+  Requires `kubernetes` Python pkg on the target. Defensible trade-off
+  either way.
 
-- Workflow-level env on EVERY job (including destroy):
-  `AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED`
-  `AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED`
-  Missing them = silent state corruption. Details in
-  `memory/project_tf_backend_oci_quirks.md`.
-- OCI provider auth: write `~/.oci/config` in a setup step from Actions secrets
-  (OCI_TENANCY_OCID, OCI_USER_OCID, OCI_FINGERPRINT, OCI_PRIVATE_KEY).
-- SSH: load `k8s_lab_ed25519` via ssh-agent, use `ProxyJump` for Ansible.
-- Concurrency group so applies serialize.
-- Plan job uploads `tfplan.bin`, apply job in a GitHub Environment with
-  required-reviewer approval (satisfies "reviewed plan before apply" rule).
+- **`kubeadm-config` ConfigMap patch codified in Ansible**. Currently a
+  one-off script. Not needed for fresh rebuilds. Small codification gap.
 
 ---
 
 ## State of the cluster (as of end-of-session)
 
-- 3 nodes Ready: cp (10.0.1.209), worker-1 (10.0.2.230), worker-2 (10.0.2.100)
-- Calico VXLAN CNI, all 3 calico-node pods 1/1 Ready
-- OCI CCM v1.33.2 running on cp; nodes have real InternalIPs, providerIDs,
-  topology labels
-- OCI CSI v1.33.2 installed (kube-system): controller 8/8 on cp, node driver
-  3/3 across nodes; VolumeSnapshot CRDs (v6.3.4) present
-- StorageClasses:
-  - `local-path` (default) — free, node-local, boot-volume slack
-  - `oci-bv` (explicit) — vpusPerGB "0", paravirtualized, WFFC, Delete
+- 3 nodes Ready v1.33.13: cp (10.0.1.209), worker-1 (10.0.2.230),
+  worker-2 (10.0.2.100)
+- Calico VXLAN CNI (iptables dataplane, BGP Disabled), all pods 1/1 Ready
+- OCI CCM v1.33.2: DaemonSet 1/1 on cp; nodes have real InternalIPs,
+  providerIDs (`oci://ocid1.instance.oc1.iad.*`), topology labels
+- OCI CSI v1.33.2: controller 8/8 on cp, node driver 3/3; VolumeSnapshot
+  CRDs (v6.3.4)
+- StorageClasses: `local-path` (default), `oci-bv` (explicit)
 - No PVCs live (Phase 4 exercise volumes were deleted)
-- Bastion: post-recovery, 1.5 GB swap, sshd healthy
+- **KCM :10257 + scheduler :10259 now bind 0.0.0.0** (verified `ss` +
+  worker `curl` returning 403)
+- Bastion: 1.5 GB swap, sshd healthy, ControlMaster multiplexing on
+  the Mac
 
 ---
 
 ## Access details
 
-- kubectl from Mac: `ssh -N -L 6443:127.0.0.1:6443 k8s-cp` tunnel + `~/.kube/config`
+- kubectl from Mac: `ssh -N -L 6443:127.0.0.1:6443 k8s-cp` tunnel +
+  `~/.kube/config`; alternate `KUBECONFIG=~/.kube/config-lab` uses the
+  admin.conf that Ansible fetched from cp (server field is the private
+  IP — for local use, either point kubectl through the tunnel or rewrite
+  the server URL)
 - SSH short names via `~/.ssh/config`: `k8s-bastion`, `k8s-cp`,
-  `k8s-worker-1`, `k8s-worker-2`. All use ControlMaster multiplexing +
-  ServerAlive keepalives (added during bastion OOM recovery).
+  `k8s-worker-1`, `k8s-worker-2` (ControlMaster multiplexing +
+  ServerAlive keepalives)
 - Bastion public IP: 157.151.226.90 (reserved)
-- LB public IP: 157.151.193.45 (Phase 5 D8 will move to bootstrap root so it
+- LB public IP: 157.151.193.45 (D8 plan: move to bootstrap so it
   survives destroy/rebuild)
-- OCI CLI: `~/.oci/config` already configured, `us-ashburn-1` region
+- OCI CLI: `~/.oci/config` configured, `us-ashburn-1`
 
 ## Secrets (never in git)
 
-- `~/.k8s-lab-secrets/state-backend.env` (mode 600) — MUST be sourced before
-  any `terraform` command against `primary/`:
-  ```
-  source ~/.k8s-lab-secrets/state-backend.env
-  ```
-  Contains AWS-style Customer Secret Key + the two AWS SDK v2 checksum env vars.
+- `~/.k8s-lab-secrets/state-backend.env` (mode 600) — MUST be sourced
+  before any `terraform` command against `primary/`
+- `~/.k8s-lab-secrets/grafana-admin-password` (mode 600) — created by
+  P7-3 step 3 tomorrow
 - `~/.ssh/k8s_lab_ed25519` — private SSH key
 - `~/.oci/config` + `~/.oci/oci_api_key.pem` — OCI CLI auth
 
 ---
 
-## Amendments to the master plan (already applied to both copies)
-
-See `docs/PROJECT-PLAN-v3.md` for the full details; summary of what's amended:
-
-- **Decision #8** (storage) — rewritten. The "12 GB free PVC headroom" claim
-  was wrong; strategy is local-path default + oci-bv explicit
-- **Decision #14** (platform install) — ccm-csi moved OUT of Argo, INTO the
-  Ansible layer (avoids rebuild deadlock)
-- **Decision #15** (ownership layers) — Ansible now owns "cluster-exists AND
-  schedulable" (containerd, kubeadm, Calico, CCM+CSI) + Argo bootstrap
-- **Decision #22** (observability) — extended with logging (Loki + Fluent Bit
-  at Phase 7b) and metrics-server (Phase 7)
-- **Phase 4** — was "CCM + CSI + PVC"; is now CSI + StorageClass + PVC only
-  (CCM was pulled forward to Phase 2)
-- **Phase 13** — ci-runner NOT on bastion (memory-tight); use 2nd Always-Free
-  E2.1.Micro in private worker subnet with own `nsg-runner`
-- NSG matrix — added 3 rows for TCP 5473 (calico-typha hostNetwork)
-- NSG matrix — added row for UDP 4789 worker→cp (was pruned, re-added)
-- Operator notes §9 — 10 sub-sections capturing every non-obvious lesson
-
----
-
-## Documentation layout (for orientation)
+## Documentation layout
 
 ```
 ~/workspace/k8s-lab-infra/
 ├── docs/
 │   ├── PROJECT-PLAN-v3.md          master plan + operator notes §9
-│   ├── PHASES-4-15-EXECUTION-PLAN.md   per-phase action list (post-audit)
+│   ├── PHASES-4-15-EXECUTION-PLAN.md   per-phase action list
 │   ├── PHASES-COMPLETED.md         high-level journal, phase-by-phase
-│   ├── LEARNING-LOG.md             gotchas table — grep when things break
+│   ├── LEARNING-LOG.md             gotchas + commands (Sections 1–7)
 │   └── CURRENT-STATE.md            THIS FILE (resume pointer)
 ├── terraform/
 │   ├── bootstrap/                  compartment, state bucket, OCIR
 │   ├── modules/{network,cluster-node,iam-ccm,lb}
 │   └── primary/                    root; state in Object Storage
-├── kubeadm/
-│   ├── ClusterConfiguration.yaml   used by kubeadm init
-│   └── JoinConfiguration-worker.template.yaml
+├── kubeadm/                        legacy manual configs (still git
+│                                    source of truth for the shape)
 ├── k8s/
-│   ├── storage/oci-bv-storageclass.yaml    the deliberate paid SC
-│   └── exercise/                    Phase 4 exercise + PV/PVC study samples
-├── ansible/                         stub — populated at Phase 5
-└── .github/workflows/               stub — populated at Phase 5
+│   ├── storage/oci-bv-storageclass.yaml    deliberate paid SC
+│   ├── observability/kps-values.yaml       Phase 7 helm values (NEW)
+│   └── exercise/                    Phase 4 PV/PVC study samples
+├── ansible/                        Phase 5a — 8 roles idempotent
+│   ├── ansible.cfg
+│   ├── group_vars/all.yml
+│   ├── inventory/hosts.ini
+│   ├── site.yml
+│   └── roles/{common,containerd,kubernetes-packages,kubeadm-cp,
+│              cni-calico,oci-ccm,oci-csi,kubeadm-worker}
+└── .github/workflows/              stub — Block 11
 ```
 
-Memory files at `~/.claude/projects/-Users-satheshkumarnapoleon-workspace-project/memory/`
-(13 files, indexed in `MEMORY.md`). Auto-loaded on every response.
+Memory files at
+`~/.claude/projects/-Users-satheshkumarnapoleon-workspace-project/memory/`
+(auto-loaded on every response, indexed in `MEMORY.md`).
 
 ---
 
-## If you're the future me / a fresh session — quick sanity check on arrival
+## If you're the future me — quick sanity check on arrival
 
 ```bash
-# Do the ~/.k8s-lab-secrets/state-backend.env + tunnel + config still exist?
+# Are the local secrets + kubeconfig present?
 ls -la ~/.k8s-lab-secrets/state-backend.env ~/.kube/config ~/.ssh/config
 echo "---"
-# Can we reach the cluster? (needs the tunnel running in another terminal)
+# Cluster reachable? (needs the SSH tunnel in another terminal)
 ssh -N -L 6443:127.0.0.1:6443 k8s-cp &
 sleep 3 && kubectl get nodes
 echo "---"
-# Confirm StorageClasses are still there
-kubectl get sc
+# Ansible idempotency intact?
+cd ~/workspace/k8s-lab-infra/ansible && \
+  source ~/.k8s-lab-secrets/state-backend.env && \
+  ansible-playbook site.yml --check --diff | tail -6
+# Expect: 3 hosts, changed=0, failed=0
 ```
 
-If all three succeed, we're where we left off. If not, `docs/PROJECT-PLAN-v3.md
-§9` (operator notes) covers the recovery playbook for anything that might have
-drifted.
+If all three succeed we're where we left off. Proceed to P7-3 in "Where
+we paused" above.

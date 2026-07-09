@@ -97,7 +97,16 @@ pod restart. **New Phase 7b adds it:**
 
 ## 2. Phase-by-phase
 
-### Phase 4 — CSI + StorageClasses + real PV/PVC exercise  🚧 NEXT
+> **STATUS UPDATE (2026-07-10):** Phase 4 ✅ done. Phase 5a ✅ done (all 8
+> Ansible roles idempotent against live cluster; commits `faa547a` →
+> `af6a1dc`). Phase 7 pre-work ✅ done (`3c430d0` — bind-address on
+> KCM/scheduler + 4 NSG rules). **Next-actionable step**: kube-prometheus-stack
+> helm install (P7-3 in `docs/CURRENT-STATE.md`). **Deferred and tracked**:
+> Phase 5b (workers → instance pool), Block 11 (CI/CD — industry-standard
+> PR pipeline), dynamic inventory. Phase 6 (Istio) now runs **after** Phase 7
+> observability per user direction (metrics visibility first).
+
+### Phase 4 — CSI + StorageClasses + real PV/PVC exercise  ✅ DONE
 
 Pre-reqs: D1 decided (PAYG or accept the demo PVC may fail on free tier); 1-min pre-flight —
 all 3 nodes show `spec.providerID` AND the CCM-stamped compartment annotation:
@@ -134,6 +143,19 @@ confusingly without it).
 Cost while the demo volume lives: ~$1.28/mo. Delete it after the gate if you want $0.
 
 ### Phase 5 — Round 2 codify (split into 5a / 5b)
+
+> **5a status: ✅ COMPLETE** (2026-07-10). All 8 Ansible roles pushed to
+> `origin/main`. Every `--check --diff` against the live cluster reports
+> `changed=0, failed=0` on all 3 nodes. Detailed journal in
+> `docs/PHASES-COMPLETED.md §Phase 5a`.
+>
+> **5b status: ⏳ deferred.** Live-cluster refactor (destroys named workers
+> for pool members); only consumer is Cluster Autoscaler in Phase 15;
+> observability provides visibility for the future refactor. Design below
+> is preserved verbatim for when it lands.
+>
+> **CI/CD status: ⏳ deferred to Block 11** — full industry-standard PR-driven
+> pipeline session. Notes below in "CI workflow specifics" remain valid.
 
 **Step 0 (before any CI): repo hygiene**
 - `git add -A && git commit` + create GitHub repo + push (D5).
@@ -218,13 +240,30 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 
 ### Phase 7 — Observability (metrics) + 7b (logging)
 
-1. **bind-address fix** (NSG rules alone are NOT sufficient — kubeadm binds KCM :10257 and
-   scheduler :10259 to 127.0.0.1; Prometheus would get connection-refused through any NSG):
-   live-edit the two static-pod manifests on cp to `--bind-address=0.0.0.0` AND bake the same
-   into the git ClusterConfiguration + Ansible role (else the Phase-12 rebuild silently
-   regresses the scrapes). Correction: etcd plaintext metrics port is **2381** (not 2379).
-2. NSG additions (4 rules): node-exporter 9100 worker→cp + worker→worker; KCM 10257 worker→cp;
-   scheduler 10259 worker→cp. (kubeEtcd/kubeProxy ServiceMonitors stay disabled.)
+> **Pre-work status: ✅ COMPLETE** (`3c430d0`, 2026-07-10). Items 1 and 2
+> below are done. Install (item 3+) resumes tomorrow — steps in
+> `docs/CURRENT-STATE.md` "Where we paused". Values file lives at
+> `k8s/observability/kps-values.yaml`.
+
+1. **bind-address fix** ✅ done — the "live edit" language below understated
+   the right procedure. What was actually done follows the kubeadm-documented
+   "Reconfiguring a kubeadm cluster" playbook in three layers:
+   (a) git ClusterConfiguration.yaml + Ansible `kubeadm-cp` j2 template
+   updated with `controllerManager.extraArgs: bind-address=0.0.0.0` and
+   new `scheduler.extraArgs` block → fresh rebuilds are born correct.
+   (b) `kubeadm-config` ConfigMap in `kube-system` patched → future
+   `kubeadm upgrade` re-renders manifests with the flag instead of
+   reverting. (c) Two idempotent `ansible.builtin.replace` tasks in the
+   `kubeadm-cp` role flip the live static-pod manifests — config
+   management executes the change, not a human in vi. Kubelet auto-
+   restarts (~20s KCM/scheduler blip; zero workload impact — leader
+   election handles this seamlessly on multi-cp). Note: etcd plaintext
+   metrics port is **2381** (not 2379).
+2. NSG additions (4 rules) ✅ done: `cp_in_kcm_workers` (10257),
+   `cp_in_scheduler_workers` (10259), `cp_in_node_exporter_workers`
+   (9100), `workers_in_node_exporter_self` (9100). kubeEtcd/kubeProxy
+   ServiceMonitors stay disabled — trivially reversible (+1 NSG rule +
+   values flip if needed later).
 3. kube-prometheus-stack, sized: retention 5d/6GB, scrapeInterval 60s, Prometheus
    requests 250m/750Mi + 1.5Gi limit, storage on **local-path 8Gi**, single replicas, Grafana
    persistence OFF (dashboards as ConfigMaps → clean rebuilds), Alertmanager → **Slack webhook

@@ -205,3 +205,113 @@ k8s-lab-infra/
 ```
 
 Local secrets (never committed): `~/.k8s-lab-secrets/state-backend.env` (AWS-style creds + checksum env vars), `~/.ssh/k8s_lab_ed25519`.
+
+---
+
+## 7. Phase 5a + Phase 7 — Ansible, Helm, remediation (2026-07-09/10)
+
+### Ansible commands actually used
+
+| Command | Use case |
+|---|---|
+| `ansible-galaxy collection list ansible.posix community.general` | Confirm collections are present before roles reference them |
+| `ansible --version` | Verify ansible-core version + which `ansible.cfg` is loaded (the `config file =` line proves the working-dir config was picked up) |
+| `ansible-playbook --syntax-check site.yml` | Parse-only: catches malformed YAML, wrong module names, unresolved role/group references. Fast pre-flight |
+| `ansible-playbook site.yml --list-hosts` | Evaluates inventory + host patterns per play; shows exactly which hosts each play targets. Zero SSH |
+| `ansible k8s_nodes -m ping` | End-to-end connectivity check via inventory. Not ICMP — Ansible's Python-availability check |
+| `ansible-playbook site.yml --check --diff` | Dry-run against live cluster: evaluates every task, reports what would change, shows byte-level diffs for file operations. Zero writes |
+| `ansible-playbook site.yml` | Real apply |
+| `ansible-inventory --graph` | Visualize resolved inventory structure (useful when swapping to dynamic later) |
+
+### The check → apply → check verification pattern
+
+Adopted as the standard for every role block in Phase 5a:
+
+1. **`--check --diff`** first — inspect what would change on the live
+   cluster. Any `failed` task = stop and fix before applying. Genuine
+   drift shown as file/manifest diffs.
+2. **Real apply** — flips the drift. On resources originally created
+   by Phase 2's `kubectl create -f`, server-side apply with
+   `--force-conflicts` migrates field ownership from `kubectl-create`
+   to the default `kubectl` manager (one-time takeover; subsequent
+   applies are consistent).
+3. **`--check --diff` again** — target `changed=0, failed=0`. The
+   strongest possible proof of idempotency: a fresh rebuild would
+   produce byte-identical state on second apply.
+
+### Phase 5a-specific gotchas
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| `ansible-playbook` errors immediately: `The 'community.general.yaml' callback plugin has been removed` | `stdout_callback = yaml` in ansible.cfg pointed at a callback removed in `community.general` v12.0.0 (we have 13.0.1) | `stdout_callback = default` + `result_format = yaml` — the modern way in ansible-core 2.13+ |
+| Real apply fails: `Apply failed with 1 conflict: conflict with "kubectl-create" ... field manager` | Phase 2 manual setup did `kubectl create -f manifest.yaml` → field manager `kubectl-create`. Our role does `kubectl apply --server-side` → default manager `kubectl`. SSA refuses to overwrite fields owned by another manager | Add `--force-conflicts` to the kubectl-apply command. Takes ownership from the previous manager; subsequent applies are idempotent. Standard client-side → SSA migration |
+| dnf install fails: `All matches were filtered out by exclude filtering for argument: kubelet-1.33.13-*` | pkgs.k8s.io repo file (kept from Phase 2 manual setup) has `exclude=kubelet kubeadm kubectl ...` — the upstream recommended pattern | Two-layer pinning: keep `exclude=` in the repo definition AND pass `disable_excludes: kubernetes` on the specific dnf install task. Belt+suspenders against stray `dnf install kubelet` |
+| dnf_versionlock task fails: `plugin versionlock is required` | Chicken-and-egg in check mode: `dnf-plugin-versionlock` install task is marked "would install" but not actually installed, then next task tries to use it | Guard the versionlock task with `when: not ansible_check_mode`. On real apply the plugin lands first; check mode skips honestly ("would run if prerequisites were met") |
+| `delegate_to: localhost` fails: `Task failed: Premature end of stream waiting for become success. >>> Standard Error sudo: a password is required` | Play sets `become: true` at play level; task inherits it; localhost is the Mac where `opc` doesn't exist and passwordless sudo isn't configured | Add `become: false` on the delegated task. Reading `terraform output -json` doesn't need root |
+| `get_url` reports `HTTP Error 404: Not Found` on `cloud-controller-manager-role-bindings.yaml` | My earlier plan notes listed a nonexistent third CCM manifest. v1.33.2 ships only 2: `oci-cloud-controller-manager.yaml` + `-rbac.yaml` | Always verify release assets via `api.github.com/repos/oracle/oci-cloud-controller-manager/releases/tags/v<ver>` before hard-coding filenames |
+| `kubectl annotate` shows changed every run | kubectl annotate always outputs "annotated" regardless of whether anything changed. Output-based `changed_when` idempotency doesn't work | Pre-check with a `kubectl get -o jsonpath='{.metadata.annotations.KEY}'` task registering current value; only run annotate if the read shows the annotation absent/different |
+| `--check --diff` shows changed=1 forever for `get_url` even after real apply | `get_url` in check mode doesn't verify existing file bytes — just reports "would download" | Stat-guard: register a `stat: path=/tmp/X.yaml` task; add `when: not stat_result.stat.exists` on the `get_url` |
+| `ansible.posix.sysctl` reports changed every run despite same values | Module writes to `/etc/sysctl.conf` by default; we ALSO wrote to `/etc/sysctl.d/99-k8s.conf` via `copy`. Two files, same content → module keeps trying to add to sysctl.conf | Pass `sysctl_file: /etc/sysctl.d/99-k8s.conf` explicitly. One module, one file, both writes-to-file and applies-to-kernel handled |
+| SSA apply always shows `changed` in real apply (never `unchanged`) | kubectl `--server-side` output is always `X serverside-applied` for every object — no `unchanged` variant like client-side apply. Our `changed_when` regex catches it as changed | Cosmetic quirk only. Definitive idempotency proof = subsequent `--check --diff` which skips kubectl-apply tasks (guarded `when: not ansible_check_mode`) and reports 0 |
+
+### Idempotency guards — the pattern that made every 5a role safe against the live cluster
+
+- **kubeadm-cp**: `stat /etc/kubernetes/admin.conf` → every destructive
+  task (`template`, `kubeadm init`) skips `when:
+  admin_conf_stat.stat.exists`. Re-running the play against an
+  initialized cp is a no-op.
+- **kubeadm-worker**: `stat /etc/kubernetes/kubelet.conf` → every join
+  task skips. Re-running against a joined worker is a no-op.
+- **cni-calico / oci-ccm / oci-csi**: kubectl apply is idempotent
+  server-side; `changed_when` parses `(created|configured|serverside-applied)$`;
+  `when: not ansible_check_mode` skips them in dry-run because
+  `ansible.builtin.command` can't dry-run without side effects.
+- **All manifest downloads**: stat-guarded to prevent phantom get_url
+  "changed" in check mode.
+
+### Phase 7 pre-work gotchas
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Prometheus scrape targets for KCM `:10257` and scheduler `:10259` show `down` even with NSG rules open | kubeadm binds both to `127.0.0.1` by default. Kubespray sets `0.0.0.0` at cluster-creation for this exact reason | Layer-1 process bind (`bind-address: 0.0.0.0` in ClusterConfiguration.yaml + Ansible template + live manifest replace) AND layer-2 network (NSG rules cp → 10257/10259 from workers). Both required |
+| `kubeadm upgrade` reverts a manually-patched manifest on the next release | kubeadm re-renders static-pod manifests from the `kubeadm-config` ConfigMap at upgrade time — NOT from the current manifest content | Update `kubeadm-config` ConfigMap in `kube-system` alongside the manifest edit. This is the kubeadm-documented "Reconfiguring a kubeadm cluster" procedure |
+| `worker → cp:10257` returns exit code 000 from `curl` (no HTTP response) | NSG rule missing (before P7-2 apply) or bind-address still 127.0.0.1 | 403 is the desired outcome — proves the port is open AND TLS+RBAC authn is active (anonymous rejected). 000 means TCP itself failed |
+| bind-address change appears to break kubelet/pods | Kubelet auto-restarts the static pod when its manifest changes; KCM/scheduler both restart | ~20s blip on single-cp; leader election handles it on multi-cp. Zero workload impact — none of KCM/scheduler are in the data path for pods |
+
+### Command-line skeletons worth memorizing
+
+```bash
+# --check --diff, log to file for parsing
+ansible-playbook site.yml --check --diff > /tmp/ansible-check.log 2>&1
+grep -E 'PLAY RECAP|: ok=' /tmp/ansible-check.log | tail -6
+grep -B1 '^changed:' /tmp/ansible-check.log | grep '^TASK' | sort -u
+
+# Idempotent create-or-update (works for ns, secrets, etc.)
+kubectl create ns X --dry-run=client -o yaml | kubectl apply -f -
+
+# Structural YAML edit of a ConfigMap without kubectl edit
+kubectl get cm X -o jsonpath='{.data.KEY}' > /tmp/current.yaml
+# ... modify with python/yq ...
+kubectl create cm X --from-file=KEY=/tmp/modified.yaml --dry-run=client -o yaml | kubectl apply -f -
+
+# Verify listening interface (0.0.0.0 vs 127.0.0.1)
+ssh k8s-cp 'sudo ss -tlnp | grep -E ":10257|:10259"'
+
+# Reach a private port from a peer node with just curl (no cluster context)
+ssh k8s-worker-1 'curl -sk -o /dev/null -w "%{http_code}\n" https://10.0.1.209:10257/metrics --max-time 5'
+# 403 = port open + TLS active + RBAC rejected anonymous (desired)
+# 000 = TCP failed (NSG or process not listening)
+# 200 = whoops, no auth required (never expected here)
+```
+
+### Helm reference (learned this session, used tomorrow in P7-3)
+
+| Command | Use case |
+|---|---|
+| `helm repo add prometheus-community https://prometheus-community.github.io/helm-charts` | Add a chart repo (idempotent by name) |
+| `helm repo update <repo>` | Refresh only the named repo (faster than `update` all) |
+| `helm search repo <repo/chart> --versions \| head -3` | List available chart versions (top of list = latest) |
+| `helm upgrade --install <release> <chart> --version <pin> -n <ns> -f <values.yaml> --wait --timeout 8m` | The one command for both first-time install and upgrade. `--wait` blocks until Deployments become Ready |
+| `helm ls -A` | List all releases across namespaces |
+| `helm get values <release> -n <ns>` | Show applied values (deep-merged) |
+| `helm template <release> <chart> --version <pin> -f <values> -n <ns>` | Render manifests locally without touching the cluster — useful for reviewing what Argo will apply in Phase 8 adoption |
