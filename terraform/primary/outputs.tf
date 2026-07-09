@@ -50,3 +50,22 @@ output "kubectl_tunnel_command" {
   description = "Open on your Mac, then point kubectl at https://127.0.0.1:6443. Requires 127.0.0.1 in the apiserver cert SANs (locked-decision #23)."
   value       = "ssh -N -L 6443:127.0.0.1:6443 -J opc@${module.bastion.public_ip} opc@${values(module.control_plane.private_ips)[0]}"
 }
+
+
+# ---------------------------------------------------------------------------
+# Ansible / CCM inputs (Phase 5)
+# ---------------------------------------------------------------------------
+output "compartment_ocid" {
+  description = "Compartment OCID — used by the OCI CCM cloud-provider.yaml Secret."
+  value       = var.compartment_ocid
+}
+
+output "vcn_id" {
+  description = "VCN OCID — required by CCM to find node subnets and LB backends."
+  value       = module.network.vcn_id
+}
+
+output "public_subnet_id" {
+  description = "Public subnet OCID — where CCM provisions any type=LoadBalancer services (deliberate lab use only)."
+  value       = module.network.public_subnet_id
+}
