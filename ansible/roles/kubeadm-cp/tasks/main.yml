@@ -43,6 +43,25 @@
   when: not admin_conf_stat.stat.exists
   register: kubeadm_init_output
 
+# ── Metrics bind-address remediation (Phase 7) ─────────────────────────
+# kubeadm default binds KCM :10257 / scheduler :10259 to 127.0.0.1 —
+# unreachable for Prometheus. Fresh rebuilds get 0.0.0.0 from the
+# template above; these tasks remediate the pre-Phase-7 cluster AND act
+# as a standing drift assertion. kubelet auto-restarts a static pod on
+# manifest change (~20s KCM/scheduler blip, zero workload impact; on
+# multi-cp you'd roll one node at a time).
+- name: Ensure KCM binds metrics to 0.0.0.0
+  ansible.builtin.replace:
+    path: /etc/kubernetes/manifests/kube-controller-manager.yaml
+    regexp: '--bind-address=127\.0\.0\.1'
+    replace: '--bind-address=0.0.0.0'
+
+- name: Ensure scheduler binds metrics to 0.0.0.0
+  ansible.builtin.replace:
+    path: /etc/kubernetes/manifests/kube-scheduler.yaml
+    regexp: '--bind-address=127\.0\.0\.1'
+    replace: '--bind-address=0.0.0.0'
+
 # ── Fetch admin.conf back to controller for operator/CI access ────────────
 - name: Re-stat admin.conf (may have been created above)
   ansible.builtin.stat:

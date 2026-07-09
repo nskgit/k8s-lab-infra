@@ -44,6 +44,16 @@ controllerManager:
   extraArgs:
     - name: cloud-provider
       value: external
+    # Phase 7: Prometheus scrapes :10257. kubeadm default binds 127.0.0.1.
+    # Port serves HTTPS + RBAC authz; NSGs restrict sources to the VCN.
+    - name: bind-address
+      value: "0.0.0.0"
+
+scheduler:
+  extraArgs:
+    # Phase 7: same rationale — Prometheus scrapes :10259.
+    - name: bind-address
+      value: "0.0.0.0"
 
 etcd:
   local:

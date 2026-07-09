@@ -175,6 +175,11 @@ resource "oci_core_network_security_group_security_rule" "bastion_out_ssh_worker
 #         6443/tcp  from nsg-bastion       kubectl direct (or Phase 13 CI runner)
 #         6443/tcp  from nsg-workers       worker kubelet → apiserver
 #         10250/tcp from nsg-workers       Prometheus (on worker) → cp kubelet scrape
+#         10257/tcp from nsg-workers       Prometheus → cp KCM metrics (Phase 7;
+#                                          pairs with bind-address=0.0.0.0)
+#         10259/tcp from nsg-workers       Prometheus → cp scheduler metrics (Phase 7)
+#         9100/tcp  from nsg-workers       Prometheus → cp node-exporter (Phase 7;
+#                                          DaemonSet tolerates the cp taint)
 #         5473/tcp  from nsg-workers       Calico typha (hostNetwork:true): worker
 #                                          felix → cp typha replica
 #         4789/udp  from nsg-workers       Calico VXLAN: worker pod → cp pod
@@ -300,6 +305,59 @@ resource "oci_core_network_security_group_security_rule" "cp_in_vxlan_workers" {
   }
 }
 
+# Phase 7 observability scrapes. KCM :10257 and scheduler :10259 serve HTTPS
+# with token authn + RBAC authz — kubeadm defaults bound them to 127.0.0.1;
+# the kubeadm-cp role sets bind-address=0.0.0.0, and these rules restrict
+# reachability to worker-sourced traffic (Prometheus pod SNAT'd by Calico
+# natOutgoing to its worker's node IP).
+resource "oci_core_network_security_group_security_rule" "cp_in_kcm_workers" {
+  network_security_group_id = oci_core_network_security_group.cp.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source                    = oci_core_network_security_group.workers.id
+  source_type               = "NETWORK_SECURITY_GROUP"
+  description               = "Prometheus (on worker) → cp kube-controller-manager:10257 metrics (HTTPS + RBAC; Phase 7)"
+
+  tcp_options {
+    destination_port_range {
+      min = 10257
+      max = 10257
+    }
+  }
+}
+
+resource "oci_core_network_security_group_security_rule" "cp_in_scheduler_workers" {
+  network_security_group_id = oci_core_network_security_group.cp.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source                    = oci_core_network_security_group.workers.id
+  source_type               = "NETWORK_SECURITY_GROUP"
+  description               = "Prometheus (on worker) → cp kube-scheduler:10259 metrics (HTTPS + RBAC; Phase 7)"
+
+  tcp_options {
+    destination_port_range {
+      min = 10259
+      max = 10259
+    }
+  }
+}
+
+resource "oci_core_network_security_group_security_rule" "cp_in_node_exporter_workers" {
+  network_security_group_id = oci_core_network_security_group.cp.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source                    = oci_core_network_security_group.workers.id
+  source_type               = "NETWORK_SECURITY_GROUP"
+  description               = "Prometheus (on worker) → cp node-exporter:9100 (hostNetwork DaemonSet, tolerates cp taint; Phase 7)"
+
+  tcp_options {
+    destination_port_range {
+      min = 9100
+      max = 9100
+    }
+  }
+}
+
 resource "oci_core_network_security_group_security_rule" "cp_out_all" {
   network_security_group_id = oci_core_network_security_group.cp.id
   direction                 = "EGRESS"
@@ -314,6 +372,7 @@ resource "oci_core_network_security_group_security_rule" "cp_out_all" {
 #   IN  : 22/tcp    from nsg-bastion       operator SSH via ProxyJump
 #         10250/tcp from nsg-cp            apiserver → worker kubelet (exec/logs/attach proxy)
 #         10250/tcp from nsg-workers       Prometheus (worker A) → worker B kubelet scrape
+#         9100/tcp  from nsg-workers       Prometheus (worker A) → worker B node-exporter (Phase 7)
 #         30080/tcp from nsg-lb            LB → Istio ingress-gateway HTTP
 #         30443/tcp from nsg-lb            LB → Istio ingress-gateway HTTPS (Phase 6+)
 #         5473/tcp  from nsg-cp            Calico typha (hostNetwork:true): cp
@@ -453,6 +512,22 @@ resource "oci_core_network_security_group_security_rule" "workers_in_vxlan_self"
     destination_port_range {
       min = 4789
       max = 4789
+    }
+  }
+}
+
+resource "oci_core_network_security_group_security_rule" "workers_in_node_exporter_self" {
+  network_security_group_id = oci_core_network_security_group.workers.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source                    = oci_core_network_security_group.workers.id
+  source_type               = "NETWORK_SECURITY_GROUP"
+  description               = "Prometheus (worker A) → worker B node-exporter:9100 (hostNetwork DaemonSet; Phase 7)"
+
+  tcp_options {
+    destination_port_range {
+      min = 9100
+      max = 9100
     }
   }
 }

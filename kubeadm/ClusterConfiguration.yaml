@@ -77,6 +77,17 @@ controllerManager:
   extraArgs:
     - name: cloud-provider
       value: external
+    # Phase 7: Prometheus scrapes :10257. kubeadm default binds 127.0.0.1;
+    # kubespray sets 0.0.0.0 at install time for exactly this reason.
+    # Port serves HTTPS + RBAC authz; NSGs restrict sources to the VCN.
+    - name: bind-address
+      value: "0.0.0.0"
+
+scheduler:
+  extraArgs:
+    # Phase 7: same rationale — Prometheus scrapes :10259.
+    - name: bind-address
+      value: "0.0.0.0"
 
 # etcd: default = local (stacked). Single-cp = single-node etcd.
 # Multi-cp HA at Phase 14 will switch to 3-node stacked etcd or external etcd.
