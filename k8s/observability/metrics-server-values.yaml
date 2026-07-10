@@ -1,0 +1,59 @@
+# ============================================================================
+# metrics-server — the API that `kubectl top` and HPA read from.
+# Installed AFTER kube-prometheus-stack; unrelated to Prometheus TSDB.
+#
+# Chart repo:  https://kubernetes-sigs.github.io/metrics-server/
+# Chart:       metrics-server/metrics-server
+# Pin version at install time (helm upgrade --install --version <pin>).
+#
+# Namespace:   kube-system (metrics-server is a cluster system add-on,
+#              not part of the observability stack in `monitoring/`).
+# ----------------------------------------------------------------------------
+# WHY BOTH THIS AND PROMETHEUS?
+#   metrics-server = last-minute CPU/mem, in-memory, for scheduling decisions
+#                    (HPA, kubectl top, Lens, k9s, Kubernetes Dashboard).
+#                    No history, no PromQL, no alerts.
+#   Prometheus     = long-term TSDB, arbitrary metrics, alerting, dashboards.
+#   Both are needed. HPA does NOT read from Prometheus by default.
+# ----------------------------------------------------------------------------
+# LAB COMPROMISE (documented for interview): --kubelet-insecure-tls.
+#   kubelet's serving cert is signed by kubeadm's ephemeral CA, which
+#   metrics-server doesn't trust. Production fix = enable kubelet
+#   `serverTLSBootstrap: true` + a CSR approver so the cluster CA signs
+#   the serving certs, and this flag becomes unnecessary. Phase 15 plan
+#   covers this upgrade.
+# ============================================================================
+
+fullnameOverride: metrics-server
+
+replicas: 1
+
+args:
+  # See LAB COMPROMISE note above.
+  - --kubelet-insecure-tls
+  # 15s matches Prometheus's typical cadence and is HPA-friendly
+  # (HPA re-evaluates every 15s; slower resolution = laggy scaling).
+  - --metric-resolution=15s
+  # Prefer InternalIP (the IP CCM set on each node) over hostname —
+  # avoids DNS lookups that would ride CoreDNS + kube-proxy to reach
+  # the target kubelet. Also more reliable during coredns rollout.
+  - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+
+resources:
+  requests: { cpu: 50m, memory: 100Mi }
+  limits:   { cpu: 100m, memory: 200Mi }
+
+# Tolerate cp taint so metrics-server can schedule anywhere. The
+# scheduler will still prefer workers (untainted) at admission time —
+# this is a "may run on cp if workers are unavailable" safety net.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    effect: NoSchedule
+    operator: Exists
+
+# Ships enabled by default; at replicas=1 it's an effective no-op but
+# a good habit — production runs replicas=2 with minAvailable=1 so
+# rolling upgrades don't kill both at once.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
