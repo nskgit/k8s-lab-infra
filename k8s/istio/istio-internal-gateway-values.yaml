@@ -1,0 +1,35 @@
+# ============================================================================
+# istio-internal-gateway — SECOND Envoy deployment (multi-gateway demo).
+#
+# The isolation is structural: this Service's NodePort (31080) is wired to
+# NO OCI LB listener/backend set — the internet has no path to it. Reach it
+# via kubectl port-forward (lab) or bastion→NodePort with an NSG rule
+# (production shape, deferred to Phase 8).
+#
+# HTTP only: internal traffic rides the SSH/port-forward tunnel which is
+# already encrypted. Production internal gateways still terminate TLS with
+# an internal-CA cert.
+#
+# Chart:   istio/gateway 1.30.2 (same as the public one)
+# Release: istio-internal-gateway, namespace istio-system
+# NB: this chart's replica key is replicaCount (strict schema).
+# ============================================================================
+
+service:
+  type: NodePort
+  ports:
+    - name: status-port
+      port: 15021
+      targetPort: 15021
+    - name: http2
+      port: 80
+      targetPort: 80
+      nodePort: 31080   # deliberately NOT in any LB backend set
+
+replicaCount: 1
+autoscaling:
+  enabled: false
+
+resources:
+  requests: { cpu: 25m, memory: 64Mi }
+  limits:   { cpu: 200m, memory: 128Mi }
