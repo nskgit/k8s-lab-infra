@@ -240,10 +240,17 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 
 ### Phase 7 — Observability (metrics) + 7b (logging)
 
-> **Pre-work status: ✅ COMPLETE** (`3c430d0`, 2026-07-10). Items 1 and 2
-> below are done. Install (item 3+) resumes tomorrow — steps in
-> `docs/CURRENT-STATE.md` "Where we paused". Values file lives at
-> `k8s/observability/kps-values.yaml`.
+> **Phase 7 metrics: ✅ COMPLETE** (2026-07-11). All items 1–5 below are
+> done. Phase 7b (item 6) is next actionable — see
+> `docs/CURRENT-STATE.md` "Where we paused".
+>
+> Commits: `3c430d0` (pre-work: bind-address + NSG rules) → `dd14a27`
+> (kps install, cpu:null fix) → `7e9f9bb` (metrics-server).
+>
+> Values files: `k8s/observability/kps-values.yaml` (kube-prometheus-stack
+> 87.12.3, ~200 lines), `k8s/observability/metrics-server-values.yaml`
+> (~60 lines). Both installed with `--disable-openapi-validation`
+> (SSH-tunnel bandwidth for apiserver OpenAPI schema).
 
 1. **bind-address fix** ✅ done — the "live edit" language below understated
    the right procedure. What was actually done follows the kubeadm-documented

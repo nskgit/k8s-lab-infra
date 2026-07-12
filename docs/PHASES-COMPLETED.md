@@ -227,16 +227,67 @@ metrics visibility first, then service mesh)_
    persistence off + ConfigMap sidecar loading, admin creds via
    pre-created Secret.
 
-**Install pending** — resume from `CURRENT-STATE.md` "Where we paused"
-steps 1–6:
-- Add helm repo, pin chart version.
-- Namespace + Grafana admin Secret.
-- `helm upgrade --install kps` (~2 min rollout).
-- Port-forward Prometheus UI, verify all scrape targets `up`.
-- metrics-server (P7-4), Alertmanager Slack wiring (P7-5), Grafana
-  port-forward + dashboards (P7-6).
+**Install complete** (2026-07-11, commits `dd14a27` + `7e9f9bb`):
 
-Then Phase 7b (Loki + Fluent Bit).
+- **`helm upgrade --install kps`** — chart `prometheus-community/kube-prometheus-stack` v87.12.3 into `monitoring/`.
+  - Two install-time fixes needed:
+    - **`--disable-openapi-validation`** — the apiserver OpenAPI schema
+      fetch timed out through the SSH tunnel (schema is large in 1.33
+      with all our CRDs; helm downloads it for client-side manifest
+      validation on pre-install hooks). Server-side apply still
+      validates on the API side, so no safety loss. A CI runner inside
+      the cluster network wouldn't need this flag.
+    - **`cpu: null` schema violation** — Prometheus CRD rejected
+      `spec.resources.limits.cpu: "null"`. Correct K8s idiom for "no
+      CPU limit" is to omit the field entirely from `limits`. Fixed
+      in kps-values.yaml.
+  - Also had to `helm uninstall kps --no-hooks` twice to clear stuck
+    `pending-install` / `failed` release markers between retry attempts.
+  - Result: 8 pods Running (Prometheus, Alertmanager, Grafana with 3
+    containers, kube-state-metrics, operator, 3× node-exporter DS).
+
+- **Verified scrape targets** end-to-end via
+  `kubectl port-forward svc/kps-prometheus 9090:9090` + `curl /api/v1/targets`.
+  ALL 11 scrape jobs `up`:
+  - `kube-controller-manager` UP → **acceptance test for P7-1 bind-address + P7-2 NSG cp:10257 passed**
+  - `kube-scheduler` UP → same, cp:10259
+  - `node-exporter` 3/3 UP including cp (toleration + NSG cp:9100)
+  - `kubelet` 9/9 UP (3 nodes × 3 endpoints: `/metrics`, `/metrics/cadvisor`, `/metrics/probes`)
+  - `apiserver`, `coredns`, `kps-alertmanager`, `kps-grafana`,
+    `kps-operator`, `kps-prometheus`, `kube-state-metrics` — all UP
+
+- **metrics-server installed** (chart `metrics-server/metrics-server`,
+  pinned) into `kube-system`. Values file at
+  `k8s/observability/metrics-server-values.yaml`. Lab compromise
+  documented: `--kubelet-insecure-tls` (production upgrade path is
+  kubelet `serverTLSBootstrap: true` + CSR approver — noted for Phase 15).
+  - APIService `v1beta1.metrics.k8s.io` = `Available: True`.
+  - `/livez`, `/readyz`, `/readyz?verbose` all 200 OK (8 readiness sub-checks passing).
+  - `/metrics` returns 403 for anonymous — proves TLS + RBAC end-to-end.
+  - `kubectl top nodes` and `kubectl top pods -A --containers` work.
+
+- **Grafana walkthrough** — port-forward `svc/kps-grafana 3000:80`
+  → http://localhost:3000 → login `admin` + password from
+  `~/.k8s-lab-secrets/grafana-admin-password`. 27 dashboards
+  auto-loaded via the ConfigMap sidecar pattern (labels
+  `grafana_dashboard: "1"`). "Kubernetes / Controller Manager" and
+  "Kubernetes / Scheduler" dashboards populate → visual proof of
+  Phase 7 pre-work end-to-end.
+
+- **Alertmanager walkthrough** (P7-5) using live firing alerts:
+  routing tree (root + child routes with matchers), grouping
+  (`group_by`, `group_wait`, `group_interval`, `repeat_interval`),
+  matchers (label-based routing), silences (mute mechanic, via UI
+  and `amtool`), inhibition (critical → warning suppression by
+  `equal:` labels), receiver types (null / Slack / PagerDuty / webhook).
+  Real anti-affinity deadlock diagnosed in `default/nginx-anti-affinity`
+  and fixed as a demonstration. Slack webhook wiring pattern (Secret +
+  `api_url_file` production pattern) explained + values.yaml diff
+  prepared, actual apply parked until a webhook URL is available.
+
+Phase 7 metrics is **effectively complete**. Only Phase 7b (Loki +
+Fluent Bit logging) remains before moving to Phase 6 (Istio) or Phase 8
+(Argo adoption).
 
 ## Phase 8 — Argo CD + root-app; platform adopted as Argo apps
 

@@ -1,8 +1,9 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-07-10 end-of-day — Phase 5a complete + Phase 7 pre-work
-(bind-address + NSG rules) applied. **Resume with the kube-prometheus-stack
-helm install** (steps in "Where we paused" below).
+**Last updated:** 2026-07-11 midday — Phase 7 metrics **effectively complete**
+(pre-work + kube-prometheus-stack + metrics-server + Grafana walkthrough +
+Alertmanager design walkthrough all done). **Resume with Phase 7b (Loki +
+Fluent Bit logging)** — see "Where we paused" below.
 
 Read this file FIRST if you're a new session or coming back after a break.
 This is the single anchor point. Full plan is in `docs/PROJECT-PLAN-v3.md`
@@ -26,10 +27,10 @@ starts fresh. But what survives:
 1. Open Claude Code in `~/workspace/k8s-lab-infra`.
 2. First message:
 
-> Read `docs/CURRENT-STATE.md`, `docs/PHASES-4-15-EXECUTION-PLAN.md` §Phase 7,
-> and `docs/LEARNING-LOG.md` section 7. Phase 5a is complete, Phase 7
-> pre-work is done. Resume from the kube-prometheus-stack helm install
-> (P7-3 step 1 through 6).
+> Read `docs/CURRENT-STATE.md`, `docs/PHASES-4-15-EXECUTION-PLAN.md` §Phase 7b,
+> and `docs/LEARNING-LOG.md` section 7. Phase 5a complete, Phase 7 metrics
+> complete (kps + metrics-server + AM/Grafana walkthroughs). Resume with
+> Phase 7b: Loki + Fluent Bit logging.
 
 ---
 
@@ -41,8 +42,8 @@ starts fresh. But what survives:
 | **5a** | **Round 2 codify — 8 Ansible roles fully idempotent against live cluster** | ✅ **done** |
 | 5b | Workers → instance pool + join-vending | ⏳ deferred (no immediate consumer; Phase 15 dep) |
 | **7 pre-work** | **bind-address=0.0.0.0 + 4 NSG rules** | ✅ **done** |
-| **7 install** | **kube-prometheus-stack + metrics-server** | ⏭️ **RESUME HERE** |
-| 7b | Loki + Fluent Bit + Grafana Loki datasource | ⏳ after 7 |
+| **7 install** | **kube-prometheus-stack + metrics-server + AM walkthrough + Grafana tour** | ✅ **done** |
+| **7b** | **Loki + Fluent Bit + Grafana Loki datasource** | ⏭️ **RESUME HERE** |
 | 6 | Istio + Gateway API + LB TCP:443 | ⏳ after 7b |
 | 8 | Argo CD adoption of platform | ⏳ |
 | Block 11 | CI workflow (industry-standard PR→plan→apply) | ⏳ deferred |
@@ -52,81 +53,89 @@ starts fresh. But what survives:
 
 ---
 
-## Where we paused (2026-07-10 evening)
+## Where we paused (2026-07-11 midday)
 
-**Phase 7 pre-work is complete and pushed** (commit `3c430d0`):
-- KCM `:10257` and scheduler `:10259` bind `0.0.0.0` (verified via `ss` on
-  cp; verified via worker `curl` returning 403 = TLS+RBAC authn active).
-- `kubeadm-config` ConfigMap patched (via one-off Python script in
-  scratchpad — not codified in Ansible; fresh rebuilds don't need it
-  because kubeadm init regenerates the CM from our fixed template).
-- 4 NSG rules added (workers → cp:10257, cp:10259, cp:9100; workers ↔
-  workers:9100).
-- Ansible roles updated: `kubeadm-cp` has idempotent `replace` tasks for
-  both manifests; git ClusterConfiguration.yaml + j2 template both
-  updated so rebuilds are born correct.
-- Bonus fix: `cni-calico` role has a stat-guard on the tigera-operator
-  manifest download (get_url in --check reported would-download without
-  verifying bytes).
+**Phase 7 metrics is done end-to-end.** kube-prometheus-stack chart
+`87.12.3` and metrics-server both installed, verified, and committed.
+Grafana and Alertmanager walkthroughs complete. Slack webhook wiring
+teed up (Secret + `api_url_file` pattern, values.yaml diff prepared in
+chat) but not applied — parked until a webhook URL is available.
 
-**Values file written and ready for tomorrow:** `k8s/observability/kps-values.yaml`
-(180 lines). Includes sizing, storage note (local-path vs oci-bv), scrape
-targets (kubelet/apiserver/coredns/KCM/scheduler/node-exporter/kube-state
-ON; kubeEtcd/kubeProxy OFF), Grafana persistence off + ConfigMap sidecar
-loading, Alertmanager with null-receiver for now (Slack webhook wired in
-P7-5 as separate reviewable diff).
+Live cluster state:
+- 3 nodes Ready v1.33.13; all workloads healthy.
+- `monitoring/` namespace: 8 kps pods Running + `metrics-server` in
+  `kube-system` Running. `kubectl top nodes/pods` works.
+- Prometheus `/targets`: all 11 scrape jobs UP. KCM + scheduler + cp
+  node-exporter all healthy → Phase 7 pre-work acceptance test passed.
+- Alertmanager: currently null-receiver (alerts fire but don't leave the
+  pod). `Watchdog` canary firing as designed.
+- Grafana: 27 dashboards auto-loaded via ConfigMap sidecar; admin
+  password in `~/.k8s-lab-secrets/grafana-admin-password`.
 
-### Resume steps (run tomorrow morning from Mac)
+### Resume steps for the NEXT session — Phase 7b (Loki + Fluent Bit)
 
-Full commands with rationale live in the chat transcript, but here's the
-minimum to re-orient:
+Phase 7b design (from `docs/PHASES-4-15-EXECUTION-PLAN.md §Phase 7b`):
+
+- **Loki**: `SingleBinary` mode, 1 replica, filesystem storage on 5 Gi
+  local-path PVC, 72h retention, all caches/canary/gateway disabled
+  (chart defaults would never fit our 8 GiB nodes).
+- **Fluent Bit** DaemonSet as the log collector/parser — the
+  load-bearing config detail is the **CRI multiline parser** (containerd
+  writes `<rfc3339> stdout F msg` format; docker/JSON parser silently
+  mangles every line). Plus a control-plane toleration so cp's
+  apiserver/etcd/scheduler logs are collected.
+- **Grafana Loki datasource**: one values entry in kube-prometheus-stack
+  OR a labeled ConfigMap (`grafana_datasource: "1"`) picked up by the
+  Grafana sidecar we set up in Phase 7.
+- Total budget: ~0.35 CPU / ~600 MiB across all three components.
+- **No NSG changes** — traffic is all in-cluster VXLAN.
+
+Rough shape of the resume commands:
 
 ```bash
-# 0. sanity: cluster reachable, no drift
+# 0. sanity
 kubectl get nodes
-cd ~/workspace/k8s-lab-infra/ansible && \
-  source ~/.k8s-lab-secrets/state-backend.env && \
-  ansible-playbook site.yml --check --diff | tail -6
-# Expect: changed=0, failed=0 across all 3 nodes.
+kubectl -n monitoring get pods            # kps still healthy?
+kubectl top nodes                         # metrics-server still healthy?
 
-# 1. add helm repo
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update prometheus-community
+# 1. new values files (design first in chat, then write to k8s/observability/)
+#   loki-values.yaml
+#   fluent-bit-values.yaml
 
-# 2. pin chart version — pick latest 65.x from search output
-helm search repo prometheus-community/kube-prometheus-stack --versions | head -3
-export KPS_VERSION=<paste-latest-65.x>
+# 2. helm repos
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo add fluent  https://fluent.github.io/helm-charts
+helm repo update
 
-# 3. namespace + admin secret (idempotent)
-kubectl create ns monitoring --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n monitoring create secret generic grafana-admin \
-  --from-literal=admin-user=admin \
-  --from-literal=admin-password="$(openssl rand -base64 24)" \
-  --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n monitoring get secret grafana-admin \
-  -o jsonpath='{.data.admin-password}' | base64 -d > ~/.k8s-lab-secrets/grafana-admin-password
-chmod 600 ~/.k8s-lab-secrets/grafana-admin-password
+# 3. install Loki (SingleBinary sizing) — pinned chart
+helm search repo grafana/loki --versions | head -3
+export LOKI_VERSION=<pin>
+helm upgrade --install loki grafana/loki \
+  --version "$LOKI_VERSION" -n monitoring \
+  -f ~/workspace/k8s-lab-infra/k8s/observability/loki-values.yaml \
+  --wait --timeout 8m --disable-openapi-validation
 
-# 4. install (pinned, our values)
-helm upgrade --install kps prometheus-community/kube-prometheus-stack \
-  --version "$KPS_VERSION" \
-  --namespace monitoring \
-  -f ~/workspace/k8s-lab-infra/k8s/observability/kps-values.yaml \
-  --wait --timeout 8m
+# 4. install Fluent Bit (with CRI multiline parser + cp toleration)
+helm search repo fluent/fluent-bit --versions | head -3
+export FB_VERSION=<pin>
+helm upgrade --install fluent-bit fluent/fluent-bit \
+  --version "$FB_VERSION" -n monitoring \
+  -f ~/workspace/k8s-lab-infra/k8s/observability/fluent-bit-values.yaml \
+  --wait --timeout 5m --disable-openapi-validation
 
-# 5. verify pods + scrape targets (all 'up', especially KCM + scheduler)
-kubectl -n monitoring get pods
-kubectl -n monitoring port-forward svc/kps-kube-prometheus-prometheus 9090:9090 &
-PF=$!
-sleep 3
-curl -s http://localhost:9090/api/v1/targets | \
-  python3 -c 'import json,sys; d=json.load(sys.stdin); [print(f"{t[\"labels\"][\"job\"]:35s} {t[\"health\"]}") for t in d["data"]["activeTargets"]]' | sort -u
-kill $PF
+# 5. wire Loki datasource into Grafana
+#    (label a ConfigMap grafana_datasource=1 → sidecar picks it up automatically)
+
+# 6. verify: Grafana → Explore → Loki datasource → LogQL like:
+#    {namespace="kube-system"} |= "error"
 ```
 
-**After the install lands**: P7-4 (metrics-server), P7-5 (Alertmanager
-Slack webhook + routing tree walkthrough), P7-6 (Grafana port-forward
-access), then commit + push all Phase 7 additions.
+### After 7b lands
+
+Phase 7 metrics + logging both complete. Next options (user choice):
+- **Phase 6** — Istio + Gateway API + LB TCP:443 (real TF changes)
+- **Phase 8** — Argo CD adoption of the whole observability platform
+- **P7-5b** — wire Slack to Alertmanager (5 min if webhook available)
 
 ---
 
@@ -143,6 +152,9 @@ Commits (in order):
 | `4fdd8f5` | Phase 5a: oci-ccm + oci-csi roles (TF-outputs plumbing, snapshotter CRDs first, local-path default) |
 | `af6a1dc` | Phase 5a: kubeadm-worker role (10-min token via delegate_to cp, IMDSv2 provider-id, stat guard) |
 | `3c430d0` | Phase 7 pre-work: KCM/scheduler bind-address + 4 NSG rules + cni-calico stat-guard fix |
+| `123b8cc` | Docs refresh (Phase 5a/7 pre-work full write-up in CURRENT-STATE / PHASES-COMPLETED / LEARNING-LOG); k8s/observability/kps-values.yaml |
+| `dd14a27` | Phase 7 install: fix `cpu: null` → memory-only limit; kps landed clean (chart 87.12.3) |
+| `7e9f9bb` | Phase 7: metrics-server values + install (kubectl top works, HPA prereq) |
 
 **Idempotency evidence**: after each block, `ansible-playbook site.yml
 --check --diff` reports `changed=0, failed=0` on all 3 nodes. Real
@@ -186,13 +198,19 @@ apply → subsequent `--check` = zero drift.
   worker-2 (10.0.2.100)
 - Calico VXLAN CNI (iptables dataplane, BGP Disabled), all pods 1/1 Ready
 - OCI CCM v1.33.2: DaemonSet 1/1 on cp; nodes have real InternalIPs,
-  providerIDs (`oci://ocid1.instance.oc1.iad.*`), topology labels
+  providerIDs, topology labels
 - OCI CSI v1.33.2: controller 8/8 on cp, node driver 3/3; VolumeSnapshot
   CRDs (v6.3.4)
 - StorageClasses: `local-path` (default), `oci-bv` (explicit)
-- No PVCs live (Phase 4 exercise volumes were deleted)
-- **KCM :10257 + scheduler :10259 now bind 0.0.0.0** (verified `ss` +
-  worker `curl` returning 403)
+- **PVCs live now**: 1× Prometheus (8Gi local-path), 1× Alertmanager
+  (1Gi local-path) — from Phase 7 install
+- **KCM :10257 + scheduler :10259 bind 0.0.0.0** (Phase 7 pre-work)
+- **Phase 7 observability stack running in `monitoring/` namespace**:
+  Prometheus (kps-prometheus-0), Alertmanager (kps-alertmanager-0),
+  Grafana (3 containers), Prometheus operator, kube-state-metrics,
+  node-exporter DS (3 pods including cp), plus metrics-server in
+  `kube-system`. All targets UP; 27 dashboards loaded; `Watchdog`
+  canary firing to null-receiver as designed.
 - Bastion: 1.5 GB swap, sshd healthy, ControlMaster multiplexing on
   the Mac
 
@@ -217,8 +235,9 @@ apply → subsequent `--check` = zero drift.
 
 - `~/.k8s-lab-secrets/state-backend.env` (mode 600) — MUST be sourced
   before any `terraform` command against `primary/`
-- `~/.k8s-lab-secrets/grafana-admin-password` (mode 600) — created by
-  P7-3 step 3 tomorrow
+- `~/.k8s-lab-secrets/grafana-admin-password` (mode 600) — created
+  Phase 7. `admin` + this password logs into Grafana at port-forward
+  `svc/kps-grafana 3000:80` → http://localhost:3000
 - `~/.ssh/k8s_lab_ed25519` — private SSH key
 - `~/.oci/config` + `~/.oci/oci_api_key.pem` — OCI CLI auth
 
@@ -242,7 +261,9 @@ apply → subsequent `--check` = zero drift.
 │                                    source of truth for the shape)
 ├── k8s/
 │   ├── storage/oci-bv-storageclass.yaml    deliberate paid SC
-│   ├── observability/kps-values.yaml       Phase 7 helm values (NEW)
+│   ├── observability/
+│   │   ├── kps-values.yaml                 Phase 7 metrics stack (kps 87.12.3)
+│   │   └── metrics-server-values.yaml      Phase 7 metrics-server
 │   └── exercise/                    Phase 4 PV/PVC study samples
 ├── ansible/                        Phase 5a — 8 roles idempotent
 │   ├── ansible.cfg

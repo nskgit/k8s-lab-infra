@@ -304,7 +304,7 @@ ssh k8s-worker-1 'curl -sk -o /dev/null -w "%{http_code}\n" https://10.0.1.209:1
 # 200 = whoops, no auth required (never expected here)
 ```
 
-### Helm reference (learned this session, used tomorrow in P7-3)
+### Helm reference (learned this session, used in P7-3)
 
 | Command | Use case |
 |---|---|
@@ -315,3 +315,66 @@ ssh k8s-worker-1 'curl -sk -o /dev/null -w "%{http_code}\n" https://10.0.1.209:1
 | `helm ls -A` | List all releases across namespaces |
 | `helm get values <release> -n <ns>` | Show applied values (deep-merged) |
 | `helm template <release> <chart> --version <pin> -f <values> -n <ns>` | Render manifests locally without touching the cluster — useful for reviewing what Argo will apply in Phase 8 adoption |
+| `helm status <release> -n <ns> -o json \| jq .info.status` | Check release lifecycle state — `deployed`, `failed`, `pending-install`, `pending-upgrade`. If pending, install/upgrade will refuse until `helm uninstall --no-hooks` clears the marker |
+| `helm uninstall <release> -n <ns> --no-hooks` | Clear a stuck release marker without running post-uninstall hooks. Necessary for retry after a first-install failure |
+| `--disable-openapi-validation` | Skip client-side OpenAPI schema fetch. Needed when apiserver is behind a slow tunnel or when the schema is very large (1.33 + many CRDs) — server-side apply still validates on the API side, no safety loss |
+
+### Phase 7 install-time gotchas (kube-prometheus-stack v87.12.3)
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| `helm install` fails: `failed to download openapi: net/http: request canceled ... Client.Timeout` | Helm running from Mac fetches the apiserver's OpenAPI schema for client-side manifest validation; the schema is very large in 1.33 with all our CRDs (Calico, Tigera, CSI snapshots, kube-prometheus-stack CRDs) and the SSH-tunneled connection can't finish downloading it in time | Add `--disable-openapi-validation` to `helm upgrade --install`. Server-side apply still validates on API side. A CI runner inside the cluster network wouldn't hit this |
+| `helm install` fails: `Prometheus.monitoring.coreos.com "kps-prometheus" is invalid: spec.resources.limits.cpu: Invalid value: "null"` | K8s CRD schemas reject a literal `"null"` string for numeric-or-string fields. The correct idiom for "no limit" is to omit the field, not set it to null | In values.yaml: `limits: { memory: 1500Mi }` (drop the `cpu:` key entirely) |
+| Second `helm install` fails: `another operation (install/upgrade/rollback) is in progress` | Previous failed install left the release marker in `pending-install` state | `helm uninstall <release> -n <ns> --no-hooks` clears the marker; then re-run install |
+| CRDs already exist after a failed pre-install hook | Helm 3 installs CRDs from `crds/` directory BEFORE any pre-install hooks. If hooks fail, CRDs are still there | No fix needed — retry, helm detects existing CRDs and skips |
+| `kubectl exec ... -- curl` on distroless image fails: `curl: executable file not found in $PATH` | Modern K8s components (metrics-server, kube-scheduler, CoreDNS, etc.) ship as distroless — no shell, no curl, only the app binary | Use `kubectl port-forward` + curl from your machine, OR `kubectl debug pod/X --image=nicolaka/netshoot --target=<container>` for an ephemeral container sharing the target's network namespace |
+
+### Distroless debugging pattern (interview-worthy)
+
+Modern k8s system components use distroless base images (`gcr.io/distroless/*`).
+Traditional `kubectl exec -it ... -- curl` fails because there is no shell + no
+curl in the image. The correct pattern:
+
+```bash
+# See what's actually in the image
+kubectl -n <ns> exec pod/<name> -- ls / 2>&1 || echo "no shell, distroless"
+
+# Read the probe spec — that IS the health-check contract
+kubectl -n <ns> get deploy <name> -o jsonpath='
+port={.spec.template.spec.containers[0].ports[0].containerPort}
+liveness={.spec.template.spec.containers[0].livenessProbe.httpGet.path}
+scheme={.spec.template.spec.containers[0].livenessProbe.httpGet.scheme}
+'; echo
+
+# Health-check via port-forward from your machine (works every time)
+kubectl -n <ns> port-forward pod/<name> 10250:10250 &
+sleep 2
+curl -sk https://localhost:10250/livez -w "\n%{http_code}\n"
+curl -sk 'https://localhost:10250/readyz?verbose' -w "\n%{http_code}\n"
+
+# OR ephemeral debug container (modern K8s 1.23+ way)
+kubectl -n <ns> debug pod/<name> --image=nicolaka/netshoot --target=<container> -it -- \
+  curl -sk https://localhost:10250/readyz
+```
+
+`nicolaka/netshoot` is the industry-standard debug image: curl, dig, tcpdump,
+netcat, ss, mtr, iperf — everything a networking-adjacent SRE ever wants.
+
+### Alertmanager concepts practiced (P7-5)
+
+Working knowledge from walking through the live install:
+
+| Concept | Config key | What it does |
+|---|---|---|
+| **Routing tree** | `route` + nested `routes` | First-match-wins by default; `continue: true` fans out to multiple receivers |
+| **Matchers** | `matchers: [severity="critical"]` or `matchers: [alertname=~"Kube.*"]` (regex) | Label-based routing; supports `=`, `!=`, `=~`, `!~` |
+| **Grouping** | `group_by: [alertname, namespace]` | Bundle similar alerts into one notification; reduces spam |
+| **Timing** | `group_wait: 30s` / `group_interval: 5m` / `repeat_interval: 12h` | Wait to batch, wait between batches, wait between re-notifications |
+| **Silences** | Runtime object (UI or `amtool silence add`) | Mute an alert temporarily by matcher; alert stays firing but doesn't route |
+| **Inhibition** | `inhibit_rules` with `source_matchers` + `target_matchers` + `equal:` | Higher-severity alert suppresses lower on same subject (e.g. critical suppresses warning) |
+| **Receivers** | `receivers: - name: X, slack_configs: [...]` | Notifier definitions: `slack_configs`, `pagerduty_configs`, `webhook_configs`, `email_configs` etc. |
+| **Secret handling** | `api_url_file: /etc/alertmanager/secrets/slack-webhook/url` | Prod pattern: URL in K8s Secret, mounted via `alertmanagerSpec.secrets: [slack-webhook]`, referenced by file. Never `api_url:` inline in values.yaml |
+| **Templates** | `text: '{{ template "slack.default.text" . }}'` | Go templates format messages; kube-prometheus-stack ships default templates |
+
+Interview-critical: **alerts stay firing in Prometheus regardless of silences/inhibitions.**
+Alertmanager only decides whether/where to notify. Firing counts are always accurate.
