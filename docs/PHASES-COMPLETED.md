@@ -177,10 +177,88 @@ v1.33.13 throughout.
 - `kubernetes.core.k8s` module vs `command: kubectl apply`
 - `kubeadm-config` ConfigMap patch as Ansible task
 
-## Phase 6 — Istio + Gateway API, LB wiring, nip.io hosts
+## Phase 6 — Istio + Gateway API + LB 443 on the real domain ✅
 
-_TBD (deferred behind Phase 7 observability per user direction — get
-metrics visibility first, then service mesh)_
+Completed 2026-07-12 (commit `a5ee2be`). Ran AFTER Phase 7 metrics by
+deliberate re-ordering — observability first meant every Istio component
+landed with dashboards already watching.
+
+**The path that now serves 5 public hostnames:**
+GoDaddy DNS (`*` A-record) → OCI LB (80 HTTP-L7 / 443 TCP-L4 passthrough)
+→ NodePort 30080/30443 → istio-ingressgateway Envoy (TLS terminates; lab
+CA wildcard) → HTTPRoutes → Services → pods.
+
+1. **Gateway API CRDs v1.2.1** (standard channel) — K8s doesn't ship
+   them, Istio doesn't install them.
+2. **LB 443 in Terraform** — `nodeport_https` var + backend set (TCP
+   health check) + **TCP passthrough listener** (L4: LB never decrypts;
+   no LB certificate — Envoy owns TLS). Fixed the stale Phase-1 comment
+   claiming 443 needed a cert. Plan showed exactly +3.
+3. **Real domain replaced nip.io**: `satheshkumarnapoleon.site` at
+   GoDaddy, one `*` A-record → LB IP. GoDaddy DNS API is gated → no
+   DNS-01/wildcard Let's Encrypt; upgrade = cert-manager HTTP-01 (post-
+   ingress by definition) or DNS to Cloudflare.
+4. **Lab CA**: 10-year root + 1-year wildcard (SANs `*.domain` + apex),
+   keys in `~/.k8s-lab-secrets/lab-ca/` (600), Secret
+   `istio-ingressgateway-tls-wildcard` (kubernetes.io/tls) in
+   istio-system. Regen runbook in `k8s/istio/README.md`.
+5. **Istio 1.30.2** Helm base → istiod → gateway: global proxy
+   **25m/64Mi** (the capacity knob — default 100m/128Mi × every pod
+   would eat a worker), gateway Service **pinned NodePort 30080/30443**
+   (2nd-LB trap defused; gate check confirmed exactly one LB in OCI).
+   Gotcha: gateway chart key is `replicaCount` (strict schema rejected
+   `replicas:`).
+6. **Gateway (manual mode)** — `spec.addresses` pinned to the existing
+   istio-ingressgateway Service so Istio programs it rather than
+   auto-deploying a per-Gateway LoadBalancer Service. Two listeners:
+   HTTP:80 (allowedRoutes All) + HTTPS:443 Terminate with the wildcard
+   Secret. Lesson captured: **Envoy is an empty shell until a Gateway
+   programs it** — pre-Gateway the LB shows 502 (no healthy backends,
+   nothing listens on pod:80); post-Gateway 404 (Envoy: no route); with
+   routes 200. That 000/502/404/503/200 ladder is the ingress debugging
+   taxonomy.
+7. **echo demo** — namespace `demo` labeled istio-injection=enabled
+   (pods 2/2; sidecar resources verified at 25m/64Mi), HTTPRoute binding
+   both listeners. **XFF lesson live**: HTTP path shows client IP +
+   hop chain (L7 LB injects); HTTPS path shows only a SNAT'd Calico
+   VXLAN address (L4 passthrough — LB can't inject; PROXY protocol v2 /
+   Network LB are the Phase 15 options).
+8. **Expansion S1 — httpbin**: app #2 = one manifest, zero platform
+   changes. Image lesson repeated: go-httpbin `2.15.0` tag doesn't
+   exist (404 → 1/2 ImagePullBackOff with sidecar healthy); verify tags
+   against the registry API before pinning (`2.23.1` used).
+9. **Expansion S2 — Grafana route**: exposed the EXISTING kps Grafana at
+   grafana.<domain> — HTTPRoute in `monitoring` (ownership: route lives
+   with the app) + `grafana.ini server.root_url` (apps behind a TLS-
+   terminating proxy must know their public URL — same lesson as
+   WordPress below). Named compromise: admin UI on the PUBLIC gateway
+   behind app login; prod = internal gateway on a private LB + SSO.
+   Backends do NOT need sidecars to receive gateway traffic.
+10. **Blog stack (host-an-app demo)** — `apps` ns (injected):
+    - MariaDB **StatefulSet** + volumeClaimTemplate (2Gi local-path,
+      Bound via WFFC), **sidecar.istio.io/inject: "false"** per the
+      Phase 9 capacity rule (visible as 1/1 vs the apps' 2/2).
+    - Credentials Secret created via CLI only — manifests reference by
+      name; git never sees values (D4 formalizes at Phase 8).
+    - WordPress + Adminer both connect via the `mariadb` Service VIP;
+      WordPress needed WP_HOME/WP_SITEURL + X-Forwarded-Proto handling
+      (third occurrence of the public-URL lesson). Live blog installed
+      via browser wizard; Adminer shows the wp_* tables it created.
+11. **Expansion S3 — canary**: echo-v2 with its OWN labels + Service
+    (same-label pods would blend at the v1 Service level), HTTPRoute
+    backendRefs weighted 90/10. Measured 56/4 at n=60 (binomial wobble
+    expected). This is the primitive Argo Rollouts/Flagger automate.
+12. **mTLS proven**: echo→httpbin `/headers` shows X-Forwarded-Client-
+    Cert with SPIFFE identities (`spiffe://cluster.local/ns/demo/sa/
+    default` both sides — dedicated per-workload ServiceAccounts are the
+    prod upgrade enabling AuthorizationPolicy). Sidecars bypass
+    kube-proxy east-west: Envoy targets pod IPs from istiod's endpoint
+    push. Tooling lesson repeated: echo image has wget not curl.
+
+Ordering note for the master-plan redo: **7 → 6 worked better than
+6 → 7** (metrics watching the mesh install), but 6 → 7's Istio
+telemetry items (ServiceMonitor/PodMonitor + Kiali) are still pending
+either way — tracked for the Phase 8 window.
 
 ## Phase 7 — kube-prometheus-stack + Alertmanager + Grafana
 

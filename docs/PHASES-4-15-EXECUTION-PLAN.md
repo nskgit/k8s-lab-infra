@@ -212,6 +212,35 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 
 ### Phase 6 — Istio + Gateway API + LB 443
 
+> **STATUS: ✅ COMPLETE 2026-07-12** (commit `a5ee2be`; ran AFTER Phase 7
+> metrics by user choice — observability first paid off). Full journal in
+> `PHASES-COMPLETED.md §Phase 6`; gotchas in `LEARNING-LOG.md §8`.
+>
+> **As-built corrections to the items below:**
+> - **Item 5 (TLS) superseded**: real domain `satheshkumarnapoleon.site`
+>   (GoDaddy) with a `*` A-record → LB IP replaced nip.io entirely. Lab CA
+>   as planned (10y root + 1y wildcard; Secret
+>   `istio-ingressgateway-tls-wildcard`). GoDaddy's DNS API is gated
+>   (10+ domains) → DNS-01 wildcard automation impossible there; the
+>   documented upgrade path is cert-manager **HTTP-01** per-host certs
+>   (requires the ingress path live first — inherently post-Phase-6), or
+>   DNS → Cloudflare for wildcard DNS-01.
+> - **Gateway chart schema**: the key is `replicaCount` (istiod chart uses
+>   `pilot.replicaCount`; gateway chart REJECTS unknown keys — strict
+>   values schema caught a `replicas:` typo at install time).
+> - **Expected failure signature pre-Gateway**: the gateway Envoy opens NO
+>   traffic listeners until a Gateway CR is programmed — LB health checks
+>   fail (502 from LB) and NodePort connections refuse. Do not debug this
+>   as a fault; applying the Gateway flips 502→404 in ~30s.
+> - **Item 7 demonstrated live**: HTTP path XFF = real client IP; HTTPS
+>   L4-passthrough XFF = SNAT'd VXLAN address only.
+> - Expansion proven beyond plan scope: 5 hostnames, weighted 90/10
+>   canary (Gateway API `weight` on backendRefs), Grafana exposed via
+>   HTTPRoute (`root_url` + named public-gateway compromise), MariaDB +
+>   WordPress + Adminer stack (StatefulSet PVC on local-path, DB
+>   sidecar-excluded, CLI-created Secret), mTLS proven via XFCC SPIFFE
+>   identities on echo→httpbin.
+
 1. **Install Gateway API CRDs explicitly** (K8s 1.33 does not ship them; Istio does not install
    them) — standard channel v1.2+, from a manifest that gets a gitops home.
 2. Helm istio base → istiod → gateway (Istio ≥ 1.26 for K8s 1.33 support), with values

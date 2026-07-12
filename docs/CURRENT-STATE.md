@@ -1,36 +1,28 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-07-11 midday — Phase 7 metrics **effectively complete**
-(pre-work + kube-prometheus-stack + metrics-server + Grafana walkthrough +
-Alertmanager design walkthrough all done). **Resume with Phase 7b (Loki +
-Fluent Bit logging)** — see "Where we paused" below.
+**Last updated:** 2026-07-12 — **Phase 6 complete** (Istio + Gateway API +
+LB 443 + real domain + expansion demos). Phase 7 metrics was completed
+before it. **Next: user's choice** between Phase 7b (logging), Phase 8
+(Argo CD), Istio telemetry wiring (Kiali), or Block 11 (CI/CD). See
+"Next options" below.
 
 Read this file FIRST if you're a new session or coming back after a break.
-This is the single anchor point. Full plan is in `docs/PROJECT-PLAN-v3.md`
-and `docs/PHASES-4-15-EXECUTION-PLAN.md`; this file tells you exactly what
-to do next.
 
 ---
 
 ## How to open a new Claude Code session from here
 
-Claude Code sessions have no cross-session chat memory — each new session
-starts fresh. But what survives:
-
+What survives between sessions:
 - Everything on disk (this repo, `~/.k8s-lab-secrets/`, `~/.ssh/config`, `~/.oci/`)
-- All `memory/*.md` files at
-  `~/.claude/projects/-Users-satheshkumarnapoleon-workspace-project/memory/` —
-  auto-load on every response (indexed in `MEMORY.md` there)
-- `~/.kube/config-lab` — admin.conf fetched from cp by Ansible
+- Memory files at
+  `~/.claude/projects/-Users-satheshkumarnapoleon-workspace-project/memory/`
+- `~/.kube/config-lab` — admin.conf fetched by Ansible
 
-**To start a new session:**
-1. Open Claude Code in `~/workspace/k8s-lab-infra`.
-2. First message:
+**First message for a new session:**
 
-> Read `docs/CURRENT-STATE.md`, `docs/PHASES-4-15-EXECUTION-PLAN.md` §Phase 7b,
-> and `docs/LEARNING-LOG.md` section 7. Phase 5a complete, Phase 7 metrics
-> complete (kps + metrics-server + AM/Grafana walkthroughs). Resume with
-> Phase 7b: Loki + Fluent Bit logging.
+> Read `docs/CURRENT-STATE.md` and `docs/PHASES-COMPLETED.md` §Phase 6.
+> Phases 0-5a, 6, and 7-metrics are complete. Pick up from "Next options"
+> in CURRENT-STATE.
 
 ---
 
@@ -38,265 +30,141 @@ starts fresh. But what survives:
 
 | # | Phase | State |
 |---|---|---|
-| 0-4 | Foundation, TF infra, kubeadm, CCM, CSI, PV/PVC exercise | ✅ done |
-| **5a** | **Round 2 codify — 8 Ansible roles fully idempotent against live cluster** | ✅ **done** |
-| 5b | Workers → instance pool + join-vending | ⏳ deferred (no immediate consumer; Phase 15 dep) |
-| **7 pre-work** | **bind-address=0.0.0.0 + 4 NSG rules** | ✅ **done** |
-| **7 install** | **kube-prometheus-stack + metrics-server + AM walkthrough + Grafana tour** | ✅ **done** |
-| **7b** | **Loki + Fluent Bit + Grafana Loki datasource** | ⏭️ **RESUME HERE** |
-| 6 | Istio + Gateway API + LB TCP:443 | ⏳ after 7b |
-| 8 | Argo CD adoption of platform | ⏳ |
-| Block 11 | CI workflow (industry-standard PR→plan→apply) | ⏳ deferred |
-| 9-11 | Wave-1/2 apps + promotion | ⏳ |
-| 12 | k6 + chaos + teardown/rebuild rehearsal | ⏳ |
-| 13-15 | ci-runner, DR drills, stretch | ⏳ |
+| 0-4 | Foundation, TF infra, kubeadm, CCM, CSI, PV/PVC | ✅ done |
+| 5a | Round 2 codify — 8 idempotent Ansible roles | ✅ done |
+| 5b | Workers → instance pool + join-vending | ⏳ deferred (Phase 15 dep) |
+| 7 (metrics) | kube-prometheus-stack + metrics-server + AM/Grafana | ✅ done |
+| **6** | **Istio + Gateway API + LB 443 + real domain** | ✅ **done 2026-07-12** |
+| 7b | Loki + Fluent Bit logging | ⏳ next candidate |
+| 7-istio | Istio ServiceMonitor/PodMonitor + Kiali | ⏳ next candidate (small) |
+| 8 | Argo CD adoption of platform | ⏳ next candidate |
+| Block 11 | CI/CD workflow (industry-standard PR pipeline) | ⏳ deferred |
+| 9-15 | Apps, promotion, chaos/rebuild, runner, DR, stretch | ⏳ |
 
 ---
 
-## Where we paused (2026-07-11 midday)
+## Live state (2026-07-12)
 
-**Phase 7 metrics is done end-to-end.** kube-prometheus-stack chart
-`87.12.3` and metrics-server both installed, verified, and committed.
-Grafana and Alertmanager walkthroughs complete. Slack webhook wiring
-teed up (Secret + `api_url_file` pattern, values.yaml diff prepared in
-chat) but not applied — parked until a webhook URL is available.
+**Public ingress — 5 hostnames on `*.satheshkumarnapoleon.site`:**
 
-Live cluster state:
-- 3 nodes Ready v1.33.13; all workloads healthy.
-- `monitoring/` namespace: 8 kps pods Running + `metrics-server` in
-  `kube-system` Running. `kubectl top nodes/pods` works.
-- Prometheus `/targets`: all 11 scrape jobs UP. KCM + scheduler + cp
-  node-exporter all healthy → Phase 7 pre-work acceptance test passed.
-- Alertmanager: currently null-receiver (alerts fire but don't leave the
-  pod). `Watchdog` canary firing as designed.
-- Grafana: 27 dashboards auto-loaded via ConfigMap sidecar; admin
-  password in `~/.k8s-lab-secrets/grafana-admin-password`.
+| Host | Backend | Notes |
+|---|---|---|
+| `echo.` | echo v1/v2 **weighted 90/10 canary** | XFF + canary demos |
+| `httpbin.` | go-httpbin 2.23.1 | request playground |
+| `grafana.` | kps-grafana (monitoring ns) | root_url set; public-gateway compromise named |
+| `blog.` | WordPress (apps ns) | installed via wizard; live blog |
+| `db-admin.` | Adminer (apps ns) | same MariaDB; public compromise named |
 
-### Resume steps for the NEXT session — Phase 7b (Loki + Fluent Bit)
+**Path:** GoDaddy DNS (`*` A-record → 157.151.193.45) → OCI LB (80
+HTTP-L7 + 443 TCP-L4 passthrough) → NodePort 30080/30443 →
+istio-ingressgateway (TLS terminates; lab CA wildcard) → HTTPRoutes.
 
-Phase 7b design (from `docs/PHASES-4-15-EXECUTION-PLAN.md §Phase 7b`):
+**TLS:** root CA (10y) + wildcard (1y, expires 2027-07-12) in
+`~/.k8s-lab-secrets/lab-ca/`; Secret `istio-ingressgateway-tls-wildcard`
+in istio-system. Regen runbook: `k8s/istio/README.md`. Upgrade path:
+cert-manager HTTP-01 (GoDaddy has no DNS API → no DNS-01 wildcard).
 
-- **Loki**: `SingleBinary` mode, 1 replica, filesystem storage on 5 Gi
-  local-path PVC, 72h retention, all caches/canary/gateway disabled
-  (chart defaults would never fit our 8 GiB nodes).
-- **Fluent Bit** DaemonSet as the log collector/parser — the
-  load-bearing config detail is the **CRI multiline parser** (containerd
-  writes `<rfc3339> stdout F msg` format; docker/JSON parser silently
-  mangles every line). Plus a control-plane toleration so cp's
-  apiserver/etcd/scheduler logs are collected.
-- **Grafana Loki datasource**: one values entry in kube-prometheus-stack
-  OR a labeled ConfigMap (`grafana_datasource: "1"`) picked up by the
-  Grafana sidecar we set up in Phase 7.
-- Total budget: ~0.35 CPU / ~600 MiB across all three components.
-- **No NSG changes** — traffic is all in-cluster VXLAN.
-
-Rough shape of the resume commands:
-
-```bash
-# 0. sanity
-kubectl get nodes
-kubectl -n monitoring get pods            # kps still healthy?
-kubectl top nodes                         # metrics-server still healthy?
-
-# 1. new values files (design first in chat, then write to k8s/observability/)
-#   loki-values.yaml
-#   fluent-bit-values.yaml
-
-# 2. helm repos
-helm repo add grafana https://grafana.github.io/helm-charts
-helm repo add fluent  https://fluent.github.io/helm-charts
-helm repo update
-
-# 3. install Loki (SingleBinary sizing) — pinned chart
-helm search repo grafana/loki --versions | head -3
-export LOKI_VERSION=<pin>
-helm upgrade --install loki grafana/loki \
-  --version "$LOKI_VERSION" -n monitoring \
-  -f ~/workspace/k8s-lab-infra/k8s/observability/loki-values.yaml \
-  --wait --timeout 8m --disable-openapi-validation
-
-# 4. install Fluent Bit (with CRI multiline parser + cp toleration)
-helm search repo fluent/fluent-bit --versions | head -3
-export FB_VERSION=<pin>
-helm upgrade --install fluent-bit fluent/fluent-bit \
-  --version "$FB_VERSION" -n monitoring \
-  -f ~/workspace/k8s-lab-infra/k8s/observability/fluent-bit-values.yaml \
-  --wait --timeout 5m --disable-openapi-validation
-
-# 5. wire Loki datasource into Grafana
-#    (label a ConfigMap grafana_datasource=1 → sidecar picks it up automatically)
-
-# 6. verify: Grafana → Explore → Loki datasource → LogQL like:
-#    {namespace="kube-system"} |= "error"
-```
-
-### After 7b lands
-
-Phase 7 metrics + logging both complete. Next options (user choice):
-- **Phase 6** — Istio + Gateway API + LB TCP:443 (real TF changes)
-- **Phase 8** — Argo CD adoption of the whole observability platform
-- **P7-5b** — wire Slack to Alertmanager (5 min if webhook available)
+**Cluster:** 3 nodes Ready v1.33.13. Istio 1.30.2 (istiod + gateway, one
+LB only — trap defused). monitoring/ = kps 87.12.3 + all targets UP.
+apps/ = MariaDB StatefulSet (PVC 2Gi local-path, no sidecar) + WordPress
++ Adminer (2/2 sidecars). demo/ = echo, echo-v2, httpbin. Alertmanager
+still null-receiver (Slack wiring designed, needs webhook). Grafana
+admin password: `~/.k8s-lab-secrets/grafana-admin-password`.
 
 ---
 
-## Phase 5a — what's on disk (all committed + pushed to `origin/main`)
+## Next options (user picks)
 
-Commits (in order):
+1. **Phase 7-istio telemetry (small, ~30 min)** — Istio ServiceMonitor
+   (istiod :15014) + PodMonitor (Envoy :15090), Prometheus selectors
+   already `{}` (ready); Kiali with anonymous auth + prometheus URL.
+   Makes the mesh visible in Grafana + service graph in Kiali. Was plan
+   §Phase 7 item 4, skipped because Istio didn't exist yet.
+2. **Phase 7b logging (~1 hr)** — Loki SingleBinary (5Gi local-path,
+   72h) + Fluent Bit (CRI multiline parser + cp toleration) + Grafana
+   datasource ConfigMap (sidecar picks up `grafana_datasource=1`).
+   Envoy access logs (accessLogFile /dev/stdout is already on) become
+   queryable.
+3. **Phase 8 Argo CD** — install trimmed Argo, adopt platform
+   (istio × 3 charts with sync-waves, kps with ServerSideApply +
+   annotation tracking, metrics-server, gateway.yaml, routes). All
+   values files + pinned versions already in git = no-op first syncs.
+4. **Block 11 CI/CD** — the deferred industry-standard design session
+   (dynamic inventory, Makefile, PR → plan → gated apply workflows).
+5. **P7-5b Slack** — 5 min if a webhook URL shows up.
+
+**Recommendation when asked**: 1 → 2 → 3 (make the mesh observable,
+complete observability, then GitOps-adopt the whole platform at once).
+
+---
+
+## Commits (all pushed to origin/main)
 
 | Commit | Content |
 |---|---|
-| `faa547a` | Phase 5 pre-work: initial push, oracle/oci provider fix, errored.tfstate deleted, 3 TF outputs added |
-| `d7c9dd2` | Ansible scaffolding: ansible.cfg, group_vars/all.yml, inventory/hosts.ini, site.yml, 8 role stubs |
-| `d5ec6ad` | Base roles: common, containerd, kubernetes-packages (idempotent, changed=0 on live cluster) |
-| `f2e7d1b` | Phase 5a: kubeadm-cp + cni-calico roles (Jinja2 ClusterConfiguration, Tigera operator via SSA) |
-| `4fdd8f5` | Phase 5a: oci-ccm + oci-csi roles (TF-outputs plumbing, snapshotter CRDs first, local-path default) |
-| `af6a1dc` | Phase 5a: kubeadm-worker role (10-min token via delegate_to cp, IMDSv2 provider-id, stat guard) |
-| `3c430d0` | Phase 7 pre-work: KCM/scheduler bind-address + 4 NSG rules + cni-calico stat-guard fix |
-| `123b8cc` | Docs refresh (Phase 5a/7 pre-work full write-up in CURRENT-STATE / PHASES-COMPLETED / LEARNING-LOG); k8s/observability/kps-values.yaml |
-| `dd14a27` | Phase 7 install: fix `cpu: null` → memory-only limit; kps landed clean (chart 87.12.3) |
-| `7e9f9bb` | Phase 7: metrics-server values + install (kubectl top works, HPA prereq) |
-
-**Idempotency evidence**: after each block, `ansible-playbook site.yml
---check --diff` reports `changed=0, failed=0` on all 3 nodes. Real
-apply → subsequent `--check` = zero drift.
+| `faa547a` | Phase 5 pre-work: first push, provider fix, TF outputs |
+| `d7c9dd2` | Ansible scaffolding (8 role stubs, inventory, site.yml) |
+| `d5ec6ad` | Base roles (common, containerd, kubernetes-packages) |
+| `f2e7d1b` | kubeadm-cp + cni-calico roles |
+| `4fdd8f5` | oci-ccm + oci-csi roles |
+| `af6a1dc` | kubeadm-worker role |
+| `3c430d0` | Phase 7 pre-work: bind-address + 4 NSG rules |
+| `123b8cc` | Docs + kps-values.yaml |
+| `dd14a27` | kps install (cpu:null fix) |
+| `7e9f9bb` | metrics-server |
+| `890cc90` | Phase 7 docs complete |
+| `a5ee2be` | **Phase 6: Istio + Gateway API + LB 443 + demos (16 files)** |
 
 ---
 
 ## Deferred items (tracked, not lost)
 
-- **Phase 5b — workers → instance pool + join-vending**. Autoscaling
-  prereq (Phase 15). Live-cluster refactor (destroys named workers). Not
-  needed for any immediate phase. Design in
-  `docs/PHASES-4-15-EXECUTION-PLAN.md §Phase 5 part 5b`.
-
-- **Block 11 — CI/CD workflow** (industry-standard PR-driven pipeline).
-  User explicitly deferred to have a full design session when we get to
-  it. Would include:
-  - Dynamic inventory (`inventory/tf.py` reading `terraform output -json`,
-    or `oracle.oci` plugin for 5b instance pool)
-  - `Makefile` for both dev and CI (`make apply/check/rebuild/destroy`)
-  - `.github/workflows/{ci,apply,rebuild}.yml`
-  - Cloud-init boot-finished `wait_for` in site.yml pre_tasks
-  - cp private IP pinning (D9 in the plan — defer real change to first
-    rebuild rehearsal)
-  - Environment-gated apply with required reviewer
-
-- **`kubernetes.core.k8s` module swap**. Currently using
-  `command: kubectl apply` in cni-calico/oci-ccm/oci-csi. Cleaner
-  option = `kubernetes.core.k8s` (native check-mode + drift tracking).
-  Requires `kubernetes` Python pkg on the target. Defensible trade-off
-  either way.
-
-- **`kubeadm-config` ConfigMap patch codified in Ansible**. Currently a
-  one-off script. Not needed for fresh rebuilds. Small codification gap.
-
----
-
-## State of the cluster (as of end-of-session)
-
-- 3 nodes Ready v1.33.13: cp (10.0.1.209), worker-1 (10.0.2.230),
-  worker-2 (10.0.2.100)
-- Calico VXLAN CNI (iptables dataplane, BGP Disabled), all pods 1/1 Ready
-- OCI CCM v1.33.2: DaemonSet 1/1 on cp; nodes have real InternalIPs,
-  providerIDs, topology labels
-- OCI CSI v1.33.2: controller 8/8 on cp, node driver 3/3; VolumeSnapshot
-  CRDs (v6.3.4)
-- StorageClasses: `local-path` (default), `oci-bv` (explicit)
-- **PVCs live now**: 1× Prometheus (8Gi local-path), 1× Alertmanager
-  (1Gi local-path) — from Phase 7 install
-- **KCM :10257 + scheduler :10259 bind 0.0.0.0** (Phase 7 pre-work)
-- **Phase 7 observability stack running in `monitoring/` namespace**:
-  Prometheus (kps-prometheus-0), Alertmanager (kps-alertmanager-0),
-  Grafana (3 containers), Prometheus operator, kube-state-metrics,
-  node-exporter DS (3 pods including cp), plus metrics-server in
-  `kube-system`. All targets UP; 27 dashboards loaded; `Watchdog`
-  canary firing to null-receiver as designed.
-- Bastion: 1.5 GB swap, sshd healthy, ControlMaster multiplexing on
-  the Mac
+- **Phase 5b** — workers → instance pool + Object Storage join-vending.
+- **Block 11** — CI/CD (dynamic inventory `tf.py` or oracle.oci plugin,
+  Makefile, cloud-init wait, cp IP pin D9, PR workflows).
+- **Istio telemetry + Kiali** — see Next options #1.
+- **Slack → Alertmanager** — Secret + `api_url_file` pattern designed in
+  chat 2026-07-11; needs webhook URL.
+- **cert-manager HTTP-01** — real per-host certs; ingress path now live
+  so it's unblocked whenever wanted.
+- **Dedicated ServiceAccounts per workload** — makes SPIFFE identities
+  distinct → enables AuthorizationPolicy ("only cart may call orders").
+- **kubernetes.core.k8s** module swap; **kubeadm-config CM patch** as
+  Ansible task (both small, noted in Phase 5a docs).
+- **PROXY protocol / Network LB** for client IP on HTTPS (Phase 15).
 
 ---
 
 ## Access details
 
-- kubectl from Mac: `ssh -N -L 6443:127.0.0.1:6443 k8s-cp` tunnel +
-  `~/.kube/config`; alternate `KUBECONFIG=~/.kube/config-lab` uses the
-  admin.conf that Ansible fetched from cp (server field is the private
-  IP — for local use, either point kubectl through the tunnel or rewrite
-  the server URL)
-- SSH short names via `~/.ssh/config`: `k8s-bastion`, `k8s-cp`,
-  `k8s-worker-1`, `k8s-worker-2` (ControlMaster multiplexing +
-  ServerAlive keepalives)
-- Bastion public IP: 157.151.226.90 (reserved)
-- LB public IP: 157.151.193.45 (D8 plan: move to bootstrap so it
-  survives destroy/rebuild)
-- OCI CLI: `~/.oci/config` configured, `us-ashburn-1`
+- kubectl from Mac: SSH tunnel `ssh -N -L 6443:127.0.0.1:6443 k8s-cp`
+- SSH: `k8s-bastion`, `k8s-cp`, `k8s-worker-1`, `k8s-worker-2`
+- Bastion 157.151.226.90 (reserved) · LB 157.151.193.45 (D8: move to
+  bootstrap at rebuild)
+- Grafana: https://grafana.satheshkumarnapoleon.site (admin / password
+  file) — no port-forward needed anymore
+- Trust the lab CA in the Mac keychain for green padlocks:
+  `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt`
 
 ## Secrets (never in git)
 
-- `~/.k8s-lab-secrets/state-backend.env` (mode 600) — MUST be sourced
-  before any `terraform` command against `primary/`
-- `~/.k8s-lab-secrets/grafana-admin-password` (mode 600) — created
-  Phase 7. `admin` + this password logs into Grafana at port-forward
-  `svc/kps-grafana 3000:80` → http://localhost:3000
-- `~/.ssh/k8s_lab_ed25519` — private SSH key
-- `~/.oci/config` + `~/.oci/oci_api_key.pem` — OCI CLI auth
+- `~/.k8s-lab-secrets/state-backend.env` — source before ANY terraform
+  against primary/
+- `~/.k8s-lab-secrets/lab-ca/` — root CA + wildcard keypairs (600)
+- `~/.k8s-lab-secrets/grafana-admin-password`
+- In-cluster only: `blog-db-credentials` (apps ns) — created via CLI
+- `~/.ssh/k8s_lab_ed25519`, `~/.oci/config` + key
 
 ---
 
-## Documentation layout
-
-```
-~/workspace/k8s-lab-infra/
-├── docs/
-│   ├── PROJECT-PLAN-v3.md          master plan + operator notes §9
-│   ├── PHASES-4-15-EXECUTION-PLAN.md   per-phase action list
-│   ├── PHASES-COMPLETED.md         high-level journal, phase-by-phase
-│   ├── LEARNING-LOG.md             gotchas + commands (Sections 1–7)
-│   └── CURRENT-STATE.md            THIS FILE (resume pointer)
-├── terraform/
-│   ├── bootstrap/                  compartment, state bucket, OCIR
-│   ├── modules/{network,cluster-node,iam-ccm,lb}
-│   └── primary/                    root; state in Object Storage
-├── kubeadm/                        legacy manual configs (still git
-│                                    source of truth for the shape)
-├── k8s/
-│   ├── storage/oci-bv-storageclass.yaml    deliberate paid SC
-│   ├── observability/
-│   │   ├── kps-values.yaml                 Phase 7 metrics stack (kps 87.12.3)
-│   │   └── metrics-server-values.yaml      Phase 7 metrics-server
-│   └── exercise/                    Phase 4 PV/PVC study samples
-├── ansible/                        Phase 5a — 8 roles idempotent
-│   ├── ansible.cfg
-│   ├── group_vars/all.yml
-│   ├── inventory/hosts.ini
-│   ├── site.yml
-│   └── roles/{common,containerd,kubernetes-packages,kubeadm-cp,
-│              cni-calico,oci-ccm,oci-csi,kubeadm-worker}
-└── .github/workflows/              stub — Block 11
-```
-
-Memory files at
-`~/.claude/projects/-Users-satheshkumarnapoleon-workspace-project/memory/`
-(auto-loaded on every response, indexed in `MEMORY.md`).
-
----
-
-## If you're the future me — quick sanity check on arrival
+## Quick sanity check on arrival
 
 ```bash
-# Are the local secrets + kubeconfig present?
-ls -la ~/.k8s-lab-secrets/state-backend.env ~/.kube/config ~/.ssh/config
-echo "---"
-# Cluster reachable? (needs the SSH tunnel in another terminal)
-ssh -N -L 6443:127.0.0.1:6443 k8s-cp &
-sleep 3 && kubectl get nodes
-echo "---"
-# Ansible idempotency intact?
-cd ~/workspace/k8s-lab-infra/ansible && \
-  source ~/.k8s-lab-secrets/state-backend.env && \
-  ansible-playbook site.yml --check --diff | tail -6
-# Expect: 3 hosts, changed=0, failed=0
+kubectl get nodes                                   # 3 Ready
+for h in echo httpbin blog db-admin grafana; do
+  printf "%-10s " "$h"; curl -s --cacert ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt \
+    -o /dev/null -w "%{http_code}\n" "https://$h.satheshkumarnapoleon.site/" --max-time 8
+done                                                # 200/200/302or200/200/302
+cd ~/workspace/k8s-lab-infra/ansible && source ~/.k8s-lab-secrets/state-backend.env && \
+  ansible-playbook site.yml --check --diff 2>&1 | tail -4   # changed=0 failed=0
 ```
-
-If all three succeed we're where we left off. Proceed to P7-3 in "Where
-we paused" above.

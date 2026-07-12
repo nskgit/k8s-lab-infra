@@ -315,6 +315,68 @@ ssh k8s-worker-1 'curl -sk -o /dev/null -w "%{http_code}\n" https://10.0.1.209:1
 | `helm ls -A` | List all releases across namespaces |
 | `helm get values <release> -n <ns>` | Show applied values (deep-merged) |
 | `helm template <release> <chart> --version <pin> -f <values> -n <ns>` | Render manifests locally without touching the cluster — useful for reviewing what Argo will apply in Phase 8 adoption |
+
+---
+
+## 8. Phase 6 — Istio, Gateway API, TLS, real domain (2026-07-12)
+
+### The ingress debugging ladder (memorize verbatim)
+
+| Signal from `curl https://host/` | Broken layer | Meaning |
+|---|---|---|
+| `000` / timeout | Network | NSG, LB down, DNS, nothing listening |
+| `502` from LB | LB → backend | All backends unhealthy (e.g. Envoy has no listener yet) |
+| `404` from Envoy | Routing | Envoy + TLS fine; no HTTPRoute matches this Host |
+| `503` | Backend | Route exists; Service has no ready endpoints |
+| `302`/`200` | — | Working |
+
+### Gotchas hit (symptom → cause → fix)
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Gateway chart install fails: `additional properties 'replicas' not allowed` | istio/gateway chart uses `replicaCount` and enforces a STRICT values schema (istiod uses `pilot.replicaCount` — Istio charts are non-uniform) | Rename the key. Strict schemas are a gift: typo caught at install, not silently ignored |
+| Post-install: LB says 502, NodePort 30080 refuses connections, but Envoy pod Running + status port 15021 answers 200 | **The gateway Envoy opens NO traffic listeners until a Gateway CR is programmed** — it's an empty shell; only 15021/15090 listen | Not a fault. Apply the Gateway; istiod pushes listeners over xDS; LB health flips green in ~30s; 502→404 |
+| `curl localhost:30080` on the node → 000 even when everything works | kube-proxy 1.29+ disables NodePorts on 127.0.0.1 (KEP-3453) | Test NodePorts against the node's real IP, never localhost |
+| Pod stuck `1/2 ImagePullBackOff` | The `2/2` pattern in reverse: sidecar (container 2) healthy, app image tag `go-httpbin:2.15.0` doesn't exist | READY x/y tells you WHICH container is broken. Verify tags via registry API (`hub.docker.com/v2/repositories/<img>/tags`) before pinning |
+| `kubectl exec ... -- curl` fails: executable not found (twice now: metrics-server, echo) | Distroless/minimal images ship no curl | Check first: `kubectl exec ... -- sh -c 'which curl wget'`; use wget if present; `kubectl debug --image=nicolaka/netshoot --target=<c>` if nothing is |
+| WordPress/Grafana redirect loops or wrong URLs behind the gateway | App builds redirects from its own idea of its URL; Envoy terminates TLS and forwards plain HTTP | Every app behind a TLS-terminating proxy needs its public URL set (Grafana `server.root_url`, WordPress `WP_HOME`/`WP_SITEURL` + honor `X-Forwarded-Proto`) |
+| HTTPS requests lose the client IP (XFF shows a 10.244.x.x address) | 443 is L4 passthrough — the LB never sees plaintext, cannot inject XFF; kube-proxy SNAT masks source | By design. L7 (80) path preserves client IP. Client IP on TLS = PROXY protocol v2 or OCI Network LB (Phase 15) |
+| Let's Encrypt wildcard not automatable | GoDaddy DNS API gated behind 10+ domains/paid plan; cert-manager has no GoDaddy solver | Options: lab CA now + cert-manager HTTP-01 per-host later (needs live ingress first), or move DNS to Cloudflare (free; registrar stays GoDaddy) for DNS-01 |
+
+### Design rules worth restating
+
+- **Gateway = platform-owned (listeners/TLS/ports); HTTPRoute = app-owned, ships in the app's namespace.** backendRefs are namespace-local by default (ReferenceGrant otherwise) — the API pushes routes to live with their Services.
+- **Gateway manual mode**: `spec.addresses` → existing Service, or Istio auto-deploys a per-Gateway LoadBalancer Service (2nd-LB trap, once per Gateway).
+- **A route binds to every listener it satisfies** unless pinned with `parentRefs[].sectionName` (the HTTP→HTTPS redirect pattern).
+- **Canary needs one Service per version** — same-label pods blend at the Service layer with no weight control. Weights live on backendRefs; Envoy applies per-request.
+- **No sidecar on DB pods** (`sidecar.istio.io/inject: "false"`) — capacity + latency; PERMISSIVE mode makes mixed hops work.
+- **Meshed east-west bypasses kube-proxy**: Envoy gets endpoints from istiod and picks pod IPs directly. mTLS identity = SPIFFE URI from the pod's ServiceAccount → dedicated SAs per workload are what make AuthorizationPolicy meaningful.
+
+### Commands that earned their keep
+
+```bash
+# What cert is actually served through the LB (SNI-aware)
+openssl s_client -connect host:443 -servername host </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+# Trusted round-trip with the lab CA
+curl --cacert ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt https://host/
+
+# Gateway/route state
+kubectl get gatewayclass
+kubectl -n istio-system get gateway lab-gateway            # PROGRAMMED=True
+kubectl -n <ns> get httproute                              # per-app routes
+
+# Weighted-split distribution test
+for i in $(seq 1 60); do curl -s http://echo.<domain>/; done | grep -c echo-v2-
+
+# mTLS proof — SPIFFE identities in the XFCC header
+kubectl -n demo exec deploy/echo -c echo -- wget -qO- http://httpbin.demo.svc/headers
+
+# Trust the lab CA on macOS (padlock goes green)
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt
+```
 | `helm status <release> -n <ns> -o json \| jq .info.status` | Check release lifecycle state — `deployed`, `failed`, `pending-install`, `pending-upgrade`. If pending, install/upgrade will refuse until `helm uninstall --no-hooks` clears the marker |
 | `helm uninstall <release> -n <ns> --no-hooks` | Clear a stuck release marker without running post-uninstall hooks. Necessary for retry after a first-install failure |
 | `--disable-openapi-validation` | Skip client-side OpenAPI schema fetch. Needed when apiserver is behind a slow tunnel or when the schema is very large (1.33 + many CRDs) — server-side apply still validates on the API side, no safety loss |
