@@ -11,10 +11,18 @@ Live cert chain generated 2026-07-12. All private material lives in
 | `lab-root-ca.crt` | Root CA public cert — give to clients (`curl --cacert`) | 10 years |
 | `lab-wildcard.key` | Server private key. Mode 600. | 1 year |
 | `lab-wildcard.crt` | Server cert for `*.satheshkumarnapoleon.site` + apex, signed by the root | 1 year (expires 2027-07-12) |
+| `pldisturbme-wildcard.key` | Domain #2 server key. Mode 600. | 1 year |
+| `pldisturbme-wildcard.crt` | `*.pldisturbme.site` + apex, signed by the SAME root | 1 year (expires 2027-07-12) |
 
-In-cluster: Secret `istio-ingressgateway-tls-wildcard` (type
-`kubernetes.io/tls`) in `istio-system`, referenced by the Gateway's
-HTTPS listener `certificateRefs`.
+In-cluster Secrets (type `kubernetes.io/tls`, istio-system), one per
+domain, each referenced by its own HTTPS listener on the shared :443 —
+**SNI selects the listener + cert from the hostname in the TLS
+handshake**:
+- `istio-ingressgateway-tls-wildcard` → listener `https-sathesh`
+- `istio-ingressgateway-tls-pldisturbme` → listener `https-pldisturbme`
+  (added 2026-07-12; **DNS still pending** at the registrar — until the
+  `*` A-record → LB IP lands, test with
+  `curl --resolve hello.pldisturbme.site:443:157.151.193.45 --cacert lab-root-ca.crt https://hello.pldisturbme.site/`)
 
 DNS: GoDaddy hosts the zone. A `*` A-record points every subdomain at
 the LB public IP (157.151.193.45). The apex `@` record still serves

@@ -85,10 +85,11 @@ spec:
   parentRefs:
     - name: lab-gateway
       namespace: istio-system
-  # Must fit inside the https listener's *.satheshkumarnapoleon.site SNI
-  # constraint — and drives Host-header matching on the http listener.
+  # Each hostname binds to whichever listener it intersects — virtual
+  # hosting: ONE Deployment serving two domains through two certs.
   hostnames:
     - echo.satheshkumarnapoleon.site
+    - hello.pldisturbme.site       # domain #2 (DNS pending; curl --resolve to test)
   rules:
     # S3 canary: weighted split — the progressive-delivery primitive
     # vanilla Ingress never had. Weights are relative (90+10=100 here for

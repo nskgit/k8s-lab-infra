@@ -36,14 +36,31 @@ spec:
                                  # prod: Same or a label Selector — this is
                                  # the multi-team security boundary.
 
-    - name: https
+    # Two HTTPS listeners on the SAME port — SNI picks the listener (and
+    # therefore the cert) from the hostname the client sends in the TLS
+    # handshake. One IP, one port, N domains. The listener hostname is
+    # also a route-admission boundary: routes can only bind where their
+    # hostnames intersect.
+    - name: https-sathesh
       port: 443
       protocol: HTTPS
-      hostname: "*.satheshkumarnapoleon.site"   # SNI match: our subdomains only
+      hostname: "*.satheshkumarnapoleon.site"
       tls:
         mode: Terminate          # Envoy decrypts here (the LB is L4 passthrough)
         certificateRefs:
           - name: istio-ingressgateway-tls-wildcard   # Secret from P6-3
+      allowedRoutes:
+        namespaces:
+          from: All
+
+    - name: https-pldisturbme    # domain #2 (added 2026-07-12; DNS pending —
+      port: 443                  # test with curl --resolve until the * A-record
+      protocol: HTTPS            # lands at the registrar)
+      hostname: "*.pldisturbme.site"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: istio-ingressgateway-tls-pldisturbme
       allowedRoutes:
         namespaces:
           from: All
