@@ -25,6 +25,12 @@ variable "nodeport_http" {
   default = 30080
 }
 
+variable "nodeport_https" {
+  type        = number
+  default     = 30443
+  description = "Worker NodePort exposing Istio ingress-gateway's HTTPS listener (Phase 6). LB forwards :443 TCP passthrough here; Envoy terminates TLS with the Gateway's tls Secret."
+}
+
 variable "min_bandwidth_mbps" {
   type    = number
   default = 10

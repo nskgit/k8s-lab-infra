@@ -116,6 +116,15 @@ alertmanager:
 
 # ─── Grafana (dashboards + query UI) ─────────────────────────────────────────
 grafana:
+  # Public URL (Phase 6 S2: exposed via HTTPRoute on the shared Gateway).
+  # Grafana builds login/OAuth redirects from root_url — behind a proxy
+  # without it, logins bounce to the wrong host.
+  # LAB COMPROMISE (named): admin UI on the PUBLIC gateway, protected only
+  # by Grafana's login. Production = internal gateway on a private LB + SSO.
+  grafana.ini:
+    server:
+      root_url: https://grafana.satheshkumarnapoleon.site
+
   # No PVC — dashboards are ConfigMap-provisioned so a rebuild is clean
   persistence:
     enabled: false

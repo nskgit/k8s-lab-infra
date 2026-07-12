@@ -1,0 +1,40 @@
+# ============================================================================
+# istio/istiod — the control plane (Pilot): watches Services/Gateways/
+# HTTPRoutes, renders Envoy config, pushes over xDS to every proxy.
+#
+# Chart repo:  https://istio-release.storage.googleapis.com/charts
+# Chart:       istio/istiod   (pin at install: --version 1.30.2)
+# Namespace:   istio-system
+# Install:     SECOND — after istio/base, before istio/gateway.
+# ============================================================================
+
+pilot:
+  replicaCount: 1          # prod = 2+ for HA; lab = 1 (8 GiB nodes)
+  autoscaleEnabled: false  # fixed footprint on a small cluster
+
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    # No CPU limit — same rationale as Prometheus: CPU is compressible;
+    # a limit only causes throttle spikes during config-push bursts.
+    limits: { memory: 1Gi }
+
+global:
+  proxy:
+    # ─── THE SINGLE BIGGEST CAPACITY KNOB IN THE LAB ────────────────────
+    # Default injected sidecar = 100m/128Mi requests × EVERY meshed pod.
+    # At ~30 pods that's 3 CPU + ~3.8Gi of requests — more than a whole
+    # worker gone before any app work happens. 25m/64Mi keeps the mesh
+    # affordable; low CPU request ≠ throttled (compressible resource).
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+      limits:   { cpu: 500m, memory: 256Mi }
+
+meshConfig:
+  # Envoy access logs to stdout — readable via kubectl logs on any proxy.
+  # Prod ships these to Loki/ELK; lab reads directly. Phase 7b will pick
+  # them up automatically once Fluent Bit lands.
+  accessLogFile: /dev/stdout
+
+# mTLS note: no config here on purpose — Istio's default is PERMISSIVE
+# (accepts both mTLS and plaintext), the standard migration posture.
+# Tightening to STRICT per-namespace is a later hardening exercise.

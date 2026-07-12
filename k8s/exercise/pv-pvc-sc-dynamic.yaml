@@ -22,9 +22,7 @@ provisioner: blockvolume.csi.oraclecloud.com   # ← the real CSI driver
 parameters:
   vpusPerGB: "0"                                # Lower-Cost tier
   attachment-type: "paravirtualized"            # no host iscsid dependency
-volumeBindingMode: WaitForFirstConsumer         # wait for a Pod to schedule
-                                                # so we know which AD to
-                                                # provision in
+volumeBindingMode: WaitForFirstConsumer         # wait for a Pod to schedule                              # provision in
 allowVolumeExpansion: true
 reclaimPolicy: Delete                           # PVC delete → PV delete → volume TERMINATED
 

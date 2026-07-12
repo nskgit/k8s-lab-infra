@@ -1,0 +1,48 @@
+# ============================================================================
+# istio/gateway — the ingress gateway: a standalone Envoy Deployment that
+# receives all north-south traffic from the OCI LB.
+#
+# Chart repo:  https://istio-release.storage.googleapis.com/charts
+# Chart:       istio/gateway   (pin at install: --version 1.30.2)
+# Release:     istio-ingressgateway  (the release name becomes the Service
+#              name the LB backends hit AND what the Gateway CR points at)
+# Namespace:   istio-system
+# Install:     THIRD — after istiod is Ready.
+# ============================================================================
+
+service:
+  # ── TRAP #1 DEFUSED ──────────────────────────────────────────────────
+  # Chart default is type: LoadBalancer. Our live OCI CCM would see that
+  # and silently provision a SECOND billed LB (~$9/mo) which then fails
+  # health checks (securityListManagementMode: None = CCM manages no NSG
+  # rules). NodePort pins us to the Terraform-owned LB instead:
+  #   LB:80  (HTTP L7)  → workers:30080 → this Service → Envoy
+  #   LB:443 (TCP L4)   → workers:30443 → this Service → Envoy (TLS here)
+  # Gate check after install: kubectl get svc -n istio-system shows
+  # NodePort AND the OCI console still shows exactly ONE load balancer.
+  type: NodePort
+  ports:
+    - name: status-port
+      port: 15021
+      targetPort: 15021
+      # nodePort auto-assigned. Pin to 30021 + NSG rule + TF health-check
+      # change only if we switch the LB to HTTP health checks later.
+    - name: http2
+      port: 80
+      targetPort: 80
+      nodePort: 30080   # must match TF modules/lb var.nodeport_http
+    - name: https
+      port: 443
+      targetPort: 443
+      nodePort: 30443   # must match TF modules/lb var.nodeport_https (P6-2)
+
+# NB: this chart's key is replicaCount — NOT `replicas` (istiod uses
+# pilot.replicaCount; the gateway chart enforces its schema strictly and
+# rejects unknown keys, which is how we caught this).
+replicaCount: 1
+autoscaling:
+  enabled: false
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits:   { cpu: 500m, memory: 256Mi }

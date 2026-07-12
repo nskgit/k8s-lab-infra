@@ -1,0 +1,14 @@
+# ============================================================================
+# istio/base — CRDs + validating webhook. Nothing to size (CRDs are free).
+#
+# Chart repo:  https://istio-release.storage.googleapis.com/charts
+# Chart:       istio/base   (pin at install: --version 1.30.2)
+# Namespace:   istio-system
+# Install:     FIRST — istiod and gateway both depend on these CRDs.
+# ============================================================================
+
+# Explicit rather than implied. Revisions matter when doing canary
+# control-plane upgrades (install istiod-1.31 alongside istiod-1.30,
+# move namespaces over via istio.io/rev labels, then retire the old one)
+# — the production Istio upgrade pattern.
+defaultRevision: default
