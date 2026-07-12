@@ -260,6 +260,39 @@ Ordering note for the master-plan redo: **7 → 6 worked better than
 telemetry items (ServiceMonitor/PodMonitor + Kiali) are still pending
 either way — tracked for the Phase 8 window.
 
+### Phase 6 post-phase expansions (same day, PM session)
+
+13. **Second domain via SNI, not a second gateway** (`072600c`):
+    `*.pldisturbme.site` wildcard signed by the SAME lab root CA →
+    Secret `istio-ingressgateway-tls-pldisturbme` → second HTTPS
+    listener on the same :443 (`https-pldisturbme`, hostname-scoped).
+    SNI selects listener+cert from the TLS ClientHello. echo's route
+    gained `hello.pldisturbme.site` (virtual hosting — one Deployment,
+    two domains). **Domain's DNS is still pending at the registrar** —
+    fully verified anyway via `openssl s_client -servername` (right
+    cert per domain) + `curl --resolve` (HTTPS 200). When the domain
+    activates: one `*` A-record → LB IP; zero cluster changes.
+14. **True second gateway — internal** (`ca88d7d`): second istio/gateway
+    helm release (`istio-internal-gateway`, own Envoy, 25m/64Mi) +
+    `internal-gateway` CR (manual mode) + `intranet` demo app/route.
+    NodePort 31080 deliberately wired to NO LB listener — **isolation
+    by construction**: internet → 404 (public Envoy has no route);
+    port-forward + Host header → 200. Prod upgrade noted: bastion→
+    workers:31080 NSG rule; move grafana/db-admin routes here to retire
+    the public-admin-UI compromise; TLS with an internal CA.
+15. **Envoy internals session** (LEARNING-LOG §9): native sidecar
+    containers (istio-proxy = initContainer with restartPolicy Always
+    on K8s 1.33 — startup/shutdown ordering + Jobs fixed); admin API
+    :15000 (gateway route dump showed the HTTPRoute 90/10 compiled as
+    weighted_clusters; /certs 24h SPIFFE rotation; 1096-cluster default
+    config scope → `Sidecar` CR as the scale lever; xDS update_rejected
+    = 0 health check). **istioctl added to the redo toolchain** (master
+    plan row 0) — we worked from the raw admin API this round.
+
+Phase 6 artifacts on the internet right now: 5 public hostnames + 1
+internal-only hostname, 2 gateways, 3 listeners on the public one, 2
+domains (one DNS-pending), 1 canary split, 1 database-backed blog.
+
 ## Phase 7 — kube-prometheus-stack + Alertmanager + Grafana
 
 **Pre-work complete** (`3c430d0`, 2026-07-10):

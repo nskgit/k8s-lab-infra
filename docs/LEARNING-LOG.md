@@ -377,6 +377,94 @@ kubectl -n demo exec deploy/echo -c echo -- wget -qO- http://httpbin.demo.svc/he
 sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt
 ```
+
+---
+
+## 9. Envoy internals, native sidecars, multi-domain/multi-gateway (2026-07-12 PM)
+
+### Native sidecar containers — where Envoy actually lives in the pod
+
+Istio 1.30 on K8s 1.33 injects `istio-proxy` as an **init container with
+`restartPolicy: Always`** (a "native sidecar", GA in K8s 1.33). So:
+
+- `.spec.containers` = ONLY the app. `.spec.initContainers` =
+  `istio-init` (run-once: writes the pod-netns iptables REDIRECT rules,
+  needs NET_ADMIN, exits Completed) + `istio-proxy` (THE Envoy —
+  runs for the pod's life despite being "init").
+- READY `2/2` = app + native sidecar (run-once inits never count).
+- Why native: proxy is Ready BEFORE the app's first instruction
+  (kills the startup race / `sleep 5` hacks), proxy stops AFTER the app
+  (no shutdown resets), and Jobs complete instead of hanging on a
+  still-running sidecar.
+- See both arrays at once (injection auditor — spot unmeshed pods):
+
+```bash
+kubectl -n <ns> get pods -o custom-columns='POD:.metadata.name,INIT:.spec.initContainers[*].name,APP:.spec.containers[*].name'
+```
+
+- Hardened variant: **istio-cni** replaces istio-init entirely
+  (node-agent programs iptables; no NET_ADMIN in pods). Lab uses the
+  default; name istio-cni as the upgrade.
+
+### Inspecting a live Envoy — admin API :15000 (and istioctl)
+
+Every istio-proxy serves an admin API on localhost:15000. Raw access:
+
+```bash
+kubectl -n <ns> exec <pod> -c istio-proxy -- curl -s localhost:15000/<endpoint>
+```
+
+| Endpoint | Shows |
+|---|---|
+| `/config_dump?resource=dynamic_route_configs` | Compiled route tables — HTTPRoute weights appear as `weighted_clusters` (our 90/10 visible verbatim) |
+| `/certs` | mTLS chain + SPIFFE identity + expiry. **"0 days" is NORMAL** — workload certs live 24h, rotate ~12h |
+| `/listeners`, `/clusters` | Inventories. A default sidecar knows EVERY service in the cluster (ours: 1096 outbound clusters) — the `Sidecar` CR scopes this down; #1 sidecar-memory lever at scale |
+| `/stats \| grep update_` | xDS sync: `cds/lds update_success` counting up, `update_rejected` MUST be 0 (rejected = istiod pushed config Envoy refused) |
+| `/clusters?format=json` | Per-endpoint health + weights |
+| `/logging?level=debug` (POST) | Live log-level flip, no restart |
+
+`istioctl` (**install at Phase 6 step 0 on a redo** — `brew install
+istioctl`) wraps all of it: `proxy-status` (fleet xDS sync table),
+`proxy-config routes|listeners|clusters|endpoints|secrets <pod>`,
+`analyze -A` (mesh lint), `dashboard envoy <pod>`.
+
+Sidecar port map (memorize): **15000** admin · **15001** outbound
+capture · **15006** inbound capture · **15021** health (kubelet probes)
+· **15090** Prometheus metrics · **15014** istiod control-plane metrics.
+
+Mesh debug flow: `proxy-status` → `proxy-config routes` →
+`proxy-config endpoints` → `stats | grep update_rejected`.
+
+### Multi-domain vs multi-gateway (both built + proven)
+
+- **Second DOMAIN ≠ second gateway.** `*.pldisturbme.site` = second
+  wildcard cert signed by the SAME lab root CA + second HTTPS listener
+  on the SAME :443 — **SNI** (hostname in TLS ClientHello) selects
+  listener + cert. Verified without DNS: `openssl s_client -servername`
+  per domain shows the right cert; `curl --resolve host:443:<LB-IP>`
+  full round-trip. Listener `hostname:` doubles as route-admission
+  boundary (routes bind only where hostnames intersect — the
+  anti-hostname-hijack tenancy mechanism Ingress never had).
+- **Second GATEWAY = different exposure.** `internal-gateway` = second
+  istio/gateway helm release (own Envoy) + Gateway CR in manual mode;
+  NodePort 31080 wired to NO LB listener — internet gets 404 (public
+  Envoy has no route), port-forward + Host header gets 200. Isolation
+  by construction, not policy.
+- Route→listener binding is **implicit by hostname intersection**
+  (parentRefs names only the Gateway). `attachedRoutes` in Gateway
+  status is where the computed result shows. `sectionName` makes it
+  explicit (HTTP→HTTPS redirect pattern).
+- Hostname behavior differs per domain? **Different routes** — hostname
+  is route-level, not rule-level. Canary QA access: header-match rule
+  above the weighted rule (`x-canary: true` → v2 at 100%).
+
+### Misc gotchas from the session
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `.spec.containers[*].name` doesn't show istio-proxy | It's in `.spec.initContainers` (native sidecar) | Query both arrays / use the custom-columns one-liner |
+| `/certs` shows expiry "0 days" | 24h workload certs, integer-floor display | Normal. istiod auto-rotates at ~12h |
+| echo image has no curl | Node-based image ships wget only | `which curl wget` first; netshoot debug container otherwise |
 | `helm status <release> -n <ns> -o json \| jq .info.status` | Check release lifecycle state — `deployed`, `failed`, `pending-install`, `pending-upgrade`. If pending, install/upgrade will refuse until `helm uninstall --no-hooks` clears the marker |
 | `helm uninstall <release> -n <ns> --no-hooks` | Clear a stuck release marker without running post-uninstall hooks. Necessary for retry after a first-install failure |
 | `--disable-openapi-validation` | Skip client-side OpenAPI schema fetch. Needed when apiserver is behind a slow tunnel or when the schema is very large (1.33 + many CRDs) — server-side apply still validates on the API side, no safety loss |

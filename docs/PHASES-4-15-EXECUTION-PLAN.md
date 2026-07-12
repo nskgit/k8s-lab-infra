@@ -240,6 +240,20 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 >   WordPress + Adminer stack (StatefulSet PVC on local-path, DB
 >   sidecar-excluded, CLI-created Secret), mTLS proven via XFCC SPIFFE
 >   identities on echo→httpbin.
+> - **Post-phase expansions (2026-07-12 PM):** second domain
+>   `*.pldisturbme.site` as a second HTTPS listener + SNI on the SAME
+>   gateway (`072600c`; DNS pending — domains scale with listeners, not
+>   gateways); true second gateway `internal-gateway` with dedicated
+>   Envoy + NodePort 31080 wired to NO LB (`ca88d7d`; isolation by
+>   construction — intranet app 404s from internet, 200 via
+>   port-forward).
+> - **Tooling for the redo: install `istioctl` at P6-0** (brew install
+>   istioctl) — proxy-status / proxy-config routes|clusters|endpoints|
+>   secrets / analyze. We skipped it and used the raw Envoy admin API
+>   (`kubectl exec -c istio-proxy -- curl localhost:15000/...`) — works,
+>   but istioctl is the standard operator interface. Port map worth
+>   knowing: 15000 admin, 15001 outbound, 15006 inbound, 15021 health,
+>   15090 metrics, 15014 istiod metrics.
 
 1. **Install Gateway API CRDs explicitly** (K8s 1.33 does not ship them; Istio does not install
    them) — standard channel v1.2+, from a manifest that gets a gitops home.

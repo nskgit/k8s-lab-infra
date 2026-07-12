@@ -146,7 +146,7 @@ k8s-lab-gitops/             # Argo CD watches this
 
 | Phase | Deliverable | Gate |
 |---|---|---|
-| 0 | Mac toolchain, SSH key, OCI auth | ⏳ pending your confirmation |
+| 0 | Mac toolchain, SSH key, OCI auth. **Full tool list (as actually used through Phase 6; install ALL of these up front on a redo):** terraform, oci-cli, ansible-core (+ collections ansible.posix, community.general), kubectl, **helm** (Phase 6/7 installs), **istioctl** (`brew install istioctl` — Envoy/mesh debugging: proxy-status, proxy-config routes/clusters/endpoints/secrets, analyze; we initially skipped it and fell back to the raw :15000 admin API), git, openssl (lab CA), curl/dig | ✅ done (amended 2026-07-12 with the full as-used list) |
 | 1 | Terraform modules: network (3 subnets, 2 route tables, 4 NSGs), iam-ccm, bastion+nodes, LB, OCIR | plan reviewed each step |
 | 2 | **ROUND 1** manual bootstrap: kernel prep, containerd, kubeadm init (ClusterConfiguration, cloud-provider=external + node-ip), Calico VXLAN, **OCI CCM (pulled forward from Phase 4 — external cloud-provider is half-plumbed without it)**, joins, CoreDNS deep-dive | nodes Ready, DNS test |
 | 3 | Access: ProxyJump config + kubectl tunnel | kubectl from Mac |

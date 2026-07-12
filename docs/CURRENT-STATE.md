@@ -1,10 +1,10 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-07-12 — **Phase 6 complete** (Istio + Gateway API +
-LB 443 + real domain + expansion demos). Phase 7 metrics was completed
-before it. **Next: user's choice** between Phase 7b (logging), Phase 8
-(Argo CD), Istio telemetry wiring (Kiali), or Block 11 (CI/CD). See
-"Next options" below.
+**Last updated:** 2026-07-12 evening — **Phase 6 complete + expansions**
+(second domain via SNI, true internal gateway, Envoy-internals deep
+dive). **Istio telemetry was STARTED then paused by user** — manifest
+committed but NOT applied; see "Parked: telemetry" below. Next: user's
+choice (resume telemetry, 7b logging, Phase 8 Argo, Block 11 CI).
 
 Read this file FIRST if you're a new session or coming back after a break.
 
@@ -45,15 +45,26 @@ What survives between sessions:
 
 ## Live state (2026-07-12)
 
-**Public ingress — 5 hostnames on `*.satheshkumarnapoleon.site`:**
+**TWO gateways now** (`kubectl get gateway -A`):
+- `lab-gateway` → public Envoy (`istio-ingressgateway`), 3 listeners:
+  http:80 + https-sathesh:443 + **https-pldisturbme:443** (SNI selects
+  cert; second domain `*.pldisturbme.site` — **DNS pending at
+  registrar**; test via `curl --resolve host:443:157.151.193.45`)
+- `internal-gateway` → dedicated Envoy (`istio-internal-gateway`),
+  NodePort 31080 wired to NO LB = unreachable from internet. Access:
+  `kubectl -n istio-system port-forward svc/istio-internal-gateway 18081:80`
+
+**Public ingress — 5 hostnames on `*.satheshkumarnapoleon.site` (+1 pending domain, +1 internal):**
 
 | Host | Backend | Notes |
 |---|---|---|
 | `echo.` | echo v1/v2 **weighted 90/10 canary** | XFF + canary demos |
+| `hello.pldisturbme.site` | same weighted pair | domain #2, DNS pending |
 | `httpbin.` | go-httpbin 2.23.1 | request playground |
 | `grafana.` | kps-grafana (monitoring ns) | root_url set; public-gateway compromise named |
 | `blog.` | WordPress (apps ns) | installed via wizard; live blog |
 | `db-admin.` | Adminer (apps ns) | same MariaDB; public compromise named |
+| `intranet.` | intranet echo (demo ns) | **internal gateway ONLY** — 404 from internet by design |
 
 **Path:** GoDaddy DNS (`*` A-record → 157.151.193.45) → OCI LB (80
 HTTP-L7 + 443 TCP-L4 passthrough) → NodePort 30080/30443 →
@@ -73,13 +84,23 @@ admin password: `~/.k8s-lab-secrets/grafana-admin-password`.
 
 ---
 
+## Parked: Istio telemetry (started 2026-07-12, paused by user)
+
+State when paused:
+- `k8s/observability/istio-telemetry.yaml` **written + committed but NOT
+  applied** (ServiceMonitor istiod:15014 + PodMonitor envoy:15090,
+  canonical relabelings). Resume = `kubectl apply -f` it, then verify 2
+  new jobs in Prometheus targets.
+- kiali helm repo added; latest chart identified = **kiali-server
+  2.28.0**. Values file NOT yet written. Plan: auth anonymous,
+  prometheus url http://kps-prometheus.monitoring.svc:9090, ns
+  istio-system, access via port-forward :20001.
+- Zero NSG changes needed (all scrapes ride pod-network VXLAN).
+
 ## Next options (user picks)
 
-1. **Phase 7-istio telemetry (small, ~30 min)** — Istio ServiceMonitor
-   (istiod :15014) + PodMonitor (Envoy :15090), Prometheus selectors
-   already `{}` (ready); Kiali with anonymous auth + prometheus URL.
-   Makes the mesh visible in Grafana + service graph in Kiali. Was plan
-   §Phase 7 item 4, skipped because Istio didn't exist yet.
+1. **Resume Istio telemetry + Kiali (~20 min left)** — apply the parked
+   manifest, write kiali-values, install, generate traffic, view graph.
 2. **Phase 7b logging (~1 hr)** — Loki SingleBinary (5Gi local-path,
    72h) + Fluent Bit (CRI multiline parser + cp toleration) + Grafana
    datasource ConfigMap (sidecar picks up `grafana_datasource=1`).
