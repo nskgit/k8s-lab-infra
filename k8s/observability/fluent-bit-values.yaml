@@ -1,0 +1,76 @@
+# ============================================================================
+# Fluent Bit — per-node log collector/parser (DaemonSet). Tails container
+# logs, enriches with k8s metadata, ships to Loki.
+#
+# Chart:   fluent/fluent-bit  (pin at install)
+# NS:      monitoring
+#
+# THE load-bearing detail: multiline.parser cri. containerd writes
+#   2026-07-13T15:57:40.367Z stdout F <the message>
+# and splits long lines with P(artial)/F(ull) markers. The CRI multiline
+# parser decodes that format AND re-stitches split lines. A docker/JSON
+# parser would mangle every line — the classic Loki-on-kubeadm mistake.
+# ============================================================================
+
+kind: DaemonSet
+
+# Land on cp too, so control-plane static-pod logs (apiserver/etcd/
+# scheduler/kcm) are collected — not just worker app logs.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+resources:
+  requests: { cpu: 25m, memory: 64Mi }
+  limits:   { memory: 128Mi }
+
+# Fluent Bit exposes its own Prometheus metrics on :2020 — a ServiceMonitor
+# would let Prometheus scrape the collector itself. Off for now (add later).
+serviceMonitor:
+  enabled: false
+
+config:
+  service: |
+    [SERVICE]
+        Daemon         Off
+        Flush          5
+        Log_Level      info
+        Parsers_File   /fluent-bit/etc/parsers.conf
+        HTTP_Server    On
+        HTTP_Listen    0.0.0.0
+        HTTP_Port      2020
+        Health_Check   On
+
+  inputs: |
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        multiline.parser  cri
+        Mem_Buf_Limit     5MB
+        Skip_Long_Lines   On
+        Refresh_Interval  10
+
+  filters: |
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Merge_Log           On
+        Keep_Log            Off
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude On
+
+  outputs: |
+    [OUTPUT]
+        Name    loki
+        Match   kube.*
+        Host    loki.monitoring.svc.cluster.local
+        Port    3100
+        Labels  job=fluent-bit, namespace=$kubernetes['namespace_name'], pod=$kubernetes['pod_name'], container=$kubernetes['container_name'], node=$kubernetes['host']
+        Auto_Kubernetes_Labels Off
+        Line_Format json
+
+  # No custom parsers needed — the built-in cri multiline parser ships with
+  # fluent-bit; referenced above.
+  customParsers: ""
