@@ -1,0 +1,75 @@
+# ============================================================================
+# Loki — log store + query engine, SingleBinary mode (all components in one
+# pod). The microservices/simple-scalable modes the chart defaults toward
+# would never fit our 8Gi nodes; everything ancillary is disabled.
+#
+# Chart:   grafana/loki  (6.x — the deploymentMode/singleBinary schema).
+#          Pin at install: check `helm search repo grafana/loki --versions`.
+# NS:      monitoring (co-located with Prometheus/Grafana)
+# Query:   http://loki.monitoring.svc:3100  (gateway disabled → hit loki直接)
+#
+# Retention 72h on a 5Gi local-path PVC. Storage NOTE (same as Prometheus):
+# local-path = data dies with the node. Fine for 72h lab logs.
+# ============================================================================
+
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false          # single-tenant lab (no X-Scope-OrgID needed)
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  # Required in loki 6.x — without an explicit tsdb/v13 schema Loki errors on boot.
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  limits_config:
+    retention_period: 72h
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+  # Silence the "structured metadata requires tsdb" and volume warnings
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+
+# The single running pod
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 5Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { memory: 512Mi }
+
+# ── Disable everything that doesn't fit / isn't needed in SingleBinary ──────
+read:    { replicas: 0 }
+write:   { replicas: 0 }
+backend: { replicas: 0 }
+gateway:
+  enabled: false             # nginx front proxy — unneeded for one replica
+chunksCache:
+  enabled: false             # memcached (memory-heavy) — off
+resultsCache:
+  enabled: false             # memcached — off
+lokiCanary:
+  enabled: false             # continuous test DaemonSet — off
+test:
+  enabled: false
+# Loki's own self-monitoring pulls in grafana-agent — we already have
+# Prometheus; don't install a second agent.
+monitoring:
+  selfMonitoring:
+    enabled: false
+    grafanaAgent:
+      installOperator: false
+  serviceMonitor:
+    enabled: false
