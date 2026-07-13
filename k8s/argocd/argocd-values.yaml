@@ -1,0 +1,57 @@
+# ============================================================================
+# Argo CD — GitOps controller. Trimmed for the lab: no dex (SSO), no
+# notifications, no applicationSet (the root-app pattern uses a plain
+# Application), single replicas. Access via port-forward over the SSH
+# tunnel — no ingress/LB.
+#
+# Chart:   argo/argo-cd  (pin at install)
+# NS:      argocd
+# ~600Mi total across server/controller/repo-server/redis.
+# ============================================================================
+
+global:
+  # Lab: keep everything single-replica.
+  revisionHistoryLimit: 3
+
+dex:
+  enabled: false           # no SSO in the lab (admin password only)
+notifications:
+  enabled: false
+applicationSet:
+  enabled: false           # root-app is a plain Application, not a Set
+
+configs:
+  cm:
+    # THE pre-adoption must-do: annotation-based resource tracking.
+    # Default label tracking (argocd.argoproj.io/instance label) COLLIDES
+    # with Helm-chart-set app.kubernetes.io/instance labels that live
+    # inside IMMUTABLE selectors (Deployments/StatefulSets) — adoption
+    # would fail on "field is immutable". Annotation tracking sidesteps it.
+    application.resourceTrackingMethod: annotation
+  params:
+    # Port-forward over the SSH tunnel → skip server-side TLS (no cert
+    # juggling for an internal-only UI). We reach it via localhost.
+    server.insecure: "true"
+
+server:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 256Mi }
+
+controller:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { memory: 512Mi }
+
+repoServer:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 256Mi }
+
+redis:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits:   { memory: 128Mi }
