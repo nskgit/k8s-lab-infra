@@ -84,23 +84,27 @@ admin password: `~/.k8s-lab-secrets/grafana-admin-password`.
 
 ---
 
-## Parked: Istio telemetry (started 2026-07-12, paused by user)
+## Istio telemetry + Kiali — ✅ DONE (2026-07-13)
 
-State when paused:
-- `k8s/observability/istio-telemetry.yaml` **written + committed but NOT
-  applied** (ServiceMonitor istiod:15014 + PodMonitor envoy:15090,
-  canonical relabelings). Resume = `kubectl apply -f` it, then verify 2
-  new jobs in Prometheus targets.
-- kiali helm repo added; latest chart identified = **kiali-server
-  2.28.0**. Values file NOT yet written. Plan: auth anonymous,
-  prometheus url http://kps-prometheus.monitoring.svc:9090, ns
-  istio-system, access via port-forward :20001.
-- Zero NSG changes needed (all scrapes ride pod-network VXLAN).
+- `k8s/observability/istio-telemetry.yaml` **applied**: ServiceMonitor
+  (istiod :15014) + PodMonitor (envoy :15090). Verified: istiod job
+  up=1, envoy job up=9/9 (7 sidecars + 2 gateways), `istio_requests_total`
+  flowing, `pilot_xds_pushes` present.
+- **Kiali 2.28.0** installed (`k8s/observability/kiali-values.yaml`):
+  anonymous auth, reads our Prometheus + k8s API (Grafana = deep-link
+  only), tracing off, ~64Mi. Pod 1/1. Graph API confirmed returning
+  live topology (istio-ingressgateway → echo/echo-v2/httpbin).
+- Access: `kubectl -n istio-system port-forward svc/kiali 20001:20001`
+  → http://localhost:20001. Graph is REAL-TIME (rates decay to empty
+  without traffic — widen Duration or generate load).
 
 ## Next options (user picks)
 
-1. **Resume Istio telemetry + Kiali (~20 min left)** — apply the parked
-   manifest, write kiali-values, install, generate traffic, view graph.
+1. **Phase 7b — Loki + Fluent Bit logging (~1 hr)** — USER DRIVES
+   execution step by step. Loki SingleBinary (5Gi local-path, 72h) +
+   Fluent Bit DS (CRI multiline parser + cp toleration) + Grafana Loki
+   datasource ConfigMap. ~0.7GB total; ELK was considered + rejected on
+   RAM (needs ~4GB, ES OOM-fragile on free tier).
 2. **Phase 7b logging (~1 hr)** — Loki SingleBinary (5Gi local-path,
    72h) + Fluent Bit (CRI multiline parser + cp toleration) + Grafana
    datasource ConfigMap (sidecar picks up `grafana_datasource=1`).

@@ -1,0 +1,38 @@
+# ============================================================================
+# Kiali — Istio mesh console. Reads istio_* metrics from OUR Prometheus +
+# the k8s API; installs no storage of its own.
+#
+# Chart:   kiali/kiali-server 2.28.0 (pin at install)
+# NS:      istio-system
+# Access:  kubectl -n istio-system port-forward svc/kiali 20001:20001
+#          → http://localhost:20001
+#
+# Phase 8 Argo adoption points at this file. Prereq (done): the Istio
+# ServiceMonitor+PodMonitor from istio-telemetry.yaml feeding Prometheus.
+# ============================================================================
+
+auth:
+  strategy: anonymous          # lab: no login. Prod: openid/token/header.
+
+deployment:
+  replicas: 1
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits:   { memory: 128Mi }
+
+external_services:
+  # Point Kiali at the Prometheus we already run — NOT a new one.
+  prometheus:
+    url: "http://kps-prometheus.monitoring.svc.cluster.local:9090"
+  # Deep-link the graph's "view in Grafana" buttons to our Grafana.
+  grafana:
+    enabled: true
+    internal_url: "http://kps-grafana.monitoring.svc.cluster.local:80"
+    external_url: "https://grafana.satheshkumarnapoleon.site"
+  # No distributed tracing backend in the lab (Jaeger/Tempo would be a
+  # later add). Turn off so Kiali doesn't warn about a missing tracer.
+  tracing:
+    enabled: false
+
+# Kiali auto-discovers istiod in istio-system (default install name).
+istio_namespace: istio-system
