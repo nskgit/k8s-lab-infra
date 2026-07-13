@@ -1,10 +1,10 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-07-12 evening — **Phase 6 complete + expansions**
-(second domain via SNI, true internal gateway, Envoy-internals deep
-dive). **Istio telemetry was STARTED then paused by user** — manifest
-committed but NOT applied; see "Parked: telemetry" below. Next: user's
-choice (resume telemetry, 7b logging, Phase 8 Argo, Block 11 CI).
+**Last updated:** 2026-07-13 — **Observability COMPLETE** (metrics +
+mesh + logs). Phase 6 (Istio + expansions) done; Phase 7 metrics done;
+Istio telemetry + Kiali done; app-metrics demo (podinfo) done; Phase 7b
+(Loki + Fluent Bit) done. **Next: Phase 8 (Argo CD adoption) or Block 11
+(CI/CD)** — the whole platform is now in git, ready to GitOps-adopt.
 
 Read this file FIRST if you're a new session or coming back after a break.
 
@@ -35,11 +35,16 @@ What survives between sessions:
 | 5b | Workers → instance pool + join-vending | ⏳ deferred (Phase 15 dep) |
 | 7 (metrics) | kube-prometheus-stack + metrics-server + AM/Grafana | ✅ done |
 | **6** | **Istio + Gateway API + LB 443 + real domain** | ✅ **done 2026-07-12** |
-| 7b | Loki + Fluent Bit logging | ⏳ next candidate |
-| 7-istio | Istio ServiceMonitor/PodMonitor + Kiali | ⏳ next candidate (small) |
-| 8 | Argo CD adoption of platform | ⏳ next candidate |
+| 7-istio | Istio ServiceMonitor/PodMonitor + Kiali + app-metrics demo | ✅ done (`1bffc6e`,`3420902`) |
+| 7b | Loki + Fluent Bit logging | ✅ done (`834dc49`,`88ef6d2`) |
+| 8 | Argo CD adoption of platform | ⏭️ **next candidate** |
 | Block 11 | CI/CD workflow (industry-standard PR pipeline) | ⏳ deferred |
 | 9-15 | Apps, promotion, chaos/rebuild, runner, DR, stretch | ⏳ |
+
+**Observability is COMPLETE**: metrics (Prometheus) + mesh (Kiali) +
+logs (Loki), all viewable in Grafana. Missing pillar = distributed
+tracing (Jaeger/Tempo, later). Logs UI: Grafana → Explore → Loki (Loki
+has no UI of its own).
 
 ---
 
@@ -75,12 +80,17 @@ istio-ingressgateway (TLS terminates; lab CA wildcard) → HTTPRoutes.
 in istio-system. Regen runbook: `k8s/istio/README.md`. Upgrade path:
 cert-manager HTTP-01 (GoDaddy has no DNS API → no DNS-01 wildcard).
 
-**Cluster:** 3 nodes Ready v1.33.13. Istio 1.30.2 (istiod + gateway, one
-LB only — trap defused). monitoring/ = kps 87.12.3 + all targets UP.
-apps/ = MariaDB StatefulSet (PVC 2Gi local-path, no sidecar) + WordPress
-+ Adminer (2/2 sidecars). demo/ = echo, echo-v2, httpbin. Alertmanager
-still null-receiver (Slack wiring designed, needs webhook). Grafana
-admin password: `~/.k8s-lab-secrets/grafana-admin-password`.
+**Cluster:** 3 nodes Ready v1.33.13. Istio 1.30.2 (istiod + 2 gateways,
+one LB only — trap defused). **monitoring/** = kps 87.12.3 + metrics-server
++ Kiali 2.28.0 + Loki (SingleBinary) + Fluent Bit (3-node DS) — all
+targets UP; observability = metrics + mesh + logs, all in Grafana.
+**apps/** = MariaDB StatefulSet (PVC 2Gi local-path, no sidecar) +
+WordPress + Adminer. **demo/** = echo, echo-v2, httpbin, podinfo
+(app-metrics demo, 3 metric sources), intranet (internal-gw only).
+Alertmanager still null-receiver (Slack wiring designed, needs webhook).
+Grafana admin password: `~/.k8s-lab-secrets/grafana-admin-password`.
+Logs UI: Grafana → Explore → Loki datasource; LogQL e.g.
+`{namespace="apps"} | json | line_format "{{.log}}"`.
 
 ---
 
@@ -100,23 +110,20 @@ admin password: `~/.k8s-lab-secrets/grafana-admin-password`.
 
 ## Next options (user picks)
 
-1. **Phase 7b — Loki + Fluent Bit logging (~1 hr)** — USER DRIVES
-   execution step by step. Loki SingleBinary (5Gi local-path, 72h) +
-   Fluent Bit DS (CRI multiline parser + cp toleration) + Grafana Loki
-   datasource ConfigMap. ~0.7GB total; ELK was considered + rejected on
-   RAM (needs ~4GB, ES OOM-fragile on free tier).
-2. **Phase 7b logging (~1 hr)** — Loki SingleBinary (5Gi local-path,
-   72h) + Fluent Bit (CRI multiline parser + cp toleration) + Grafana
-   datasource ConfigMap (sidecar picks up `grafana_datasource=1`).
-   Envoy access logs (accessLogFile /dev/stdout is already on) become
-   queryable.
-3. **Phase 8 Argo CD** — install trimmed Argo, adopt platform
-   (istio × 3 charts with sync-waves, kps with ServerSideApply +
-   annotation tracking, metrics-server, gateway.yaml, routes). All
-   values files + pinned versions already in git = no-op first syncs.
-4. **Block 11 CI/CD** — the deferred industry-standard design session
-   (dynamic inventory, Makefile, PR → plan → gated apply workflows).
-5. **P7-5b Slack** — 5 min if a webhook URL shows up.
+1. **Phase 8 — Argo CD adoption (the big GitOps milestone)** — install
+   trimmed Argo, adopt the whole platform as Applications: istio × 3
+   charts (sync-waves), kps (ServerSideApply + annotation tracking),
+   metrics-server, Kiali, Loki, Fluent Bit, gateways, all routes +
+   monitors. Every values file + pinned version is already in git →
+   first syncs should be no-op diffs. ccm-csi stays Ansible-owned (D3).
+2. **Block 11 — CI/CD** — deferred industry-standard design session
+   (dynamic inventory `tf.py` or oracle.oci, Makefile, PR → plan →
+   gated apply workflows).
+3. **Istio telemetry dashboards / tracing** — import Istio Grafana
+   dashboards; or add Tempo/Jaeger for the missing 4th pillar (tracing).
+4. **P7-5b Slack** — 5 min if a webhook URL shows up (AM wiring designed).
+5. **cert-manager HTTP-01** — real per-host certs (ingress path is live
+   now, so it's unblocked).
 
 **Recommendation when asked**: 1 → 2 → 3 (make the mesh observable,
 complete observability, then GitOps-adopt the whole platform at once).

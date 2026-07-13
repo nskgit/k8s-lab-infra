@@ -396,9 +396,83 @@ domains (one DNS-pending), 1 canary split, 1 database-backed blog.
   `api_url_file` production pattern) explained + values.yaml diff
   prepared, actual apply parked until a webhook URL is available.
 
-Phase 7 metrics is **effectively complete**. Only Phase 7b (Loki +
-Fluent Bit logging) remains before moving to Phase 6 (Istio) or Phase 8
-(Argo adoption).
+### Phase 7 — Istio telemetry + Kiali + app-metrics demo (2026-07-13)
+
+**Istio telemetry** (`1bffc6e`): applied `istio-telemetry.yaml` —
+ServiceMonitor (istiod `:15014` control-plane metrics) + PodMonitor
+(every Envoy `:15090/stats/prometheus`). Stock kube-prometheus-stack
+scrapes zero Istio metrics; these two make the mesh visible. Verified:
+istiod job up=1 (`pilot_xds_pushes` present), envoy job up=9/9 (7
+sidecars + 2 gateways), `istio_requests_total` flowing.
+
+**Kiali 2.28.0** (`1bffc6e`): the mesh console. Anonymous auth; reads
+OUR Prometheus (`kps-prometheus.monitoring:9090`) + the k8s API; Grafana
+wired as *deep-link only* (NOT a graph data source); tracing disabled
+(no Jaeger in lab). Graph API confirmed live (istio-ingressgateway →
+echo/echo-v2/httpbin). Access via port-forward `:20001`. Kiali is
+real-time — graph rates decay to empty without traffic (not a fault).
+
+**App-metrics demo — podinfo** (`3420902`): makes concrete that
+app-level metrics are *opt-in*. podinfo exposes its own Prometheus
+metrics on `:9797`; a bundled PodMonitor wires the scrape. Net: ONE pod
+measured by three independent pipelines simultaneously —
+1. **app PodMonitor** → `:9797/metrics` → `http_requests_total` (the
+   app's own metrics; exist ONLY because of the PodMonitor)
+2. **envoy PodMonitor** → sidecar `:15090` → `istio_requests_total`
+3. **kubelet/cAdvisor** → automatic → `container_memory_working_set_bytes`
+   (resource usage; every container, no monitor needed)
+Concepts locked in: the **two-job split** (developer INSTRUMENTS via a
+client library to expose `/metrics`; ops/dev WIRES scraping via a
+ServiceMonitor/PodMonitor); those monitors are **Prometheus-Operator
+CRDs** (the `kps-operator` pod reconciles them into the scrape config
+the Prometheus server consumes — `kind` fixed, `metadata.name` any
+DNS-1123). Exporter sidecar pattern for 3rd-party apps; OpenTelemetry
+the emerging vendor-neutral alternative. **Phase 9 rule captured:** the
+shared app chart templates a ServiceMonitor beside Deployment/Service/
+HTTPRoute/DestinationRule.
+
+## Phase 7b — Loki + Fluent Bit logging ✅ (2026-07-13)
+
+The third observability pillar. ELK was considered and **rejected on
+capacity**: Elasticsearch ~2–3 GB + Kibana ~1 GB (~4 GB, OOM-fragile)
+vs Loki+Fluent Bit ~0.7 GB, on a cluster with ~5 GB unreserved. Kept as
+an interview talking point (Loki indexes labels only + object-store
+chunks → cheap + one-pane-with-metrics; ELK/OpenSearch when full-text
+search at volume is the real need).
+
+1. **Loki SingleBinary** (`834dc49`): `grafana/loki` chart,
+   `deploymentMode: SingleBinary` — all microservices-mode components
+   (read/write/backend), gateway, chunk/results caches (memcached),
+   lokiCanary, and self-monitoring grafana-agent DISABLED (none fit 8Gi
+   nodes; Prometheus already runs). filesystem storage, **tsdb + schema
+   v13** (required in loki 6.x — boots error without an explicit
+   schema), 72h retention, 5Gi local-path PVC, single-tenant. Verified
+   from the Mac (Loki image is distroless — no in-container
+   wget/curl, the recurring lesson): `/ready`→200, query API→success,
+   healthy WAL/table_manager, zero errors.
+2. **Fluent Bit DaemonSet** (`88ef6d2`): `fluent/fluent-bit` 0.57.9, 3
+   pods (one per node incl cp via the control-plane toleration →
+   apiserver/etcd/scheduler/kcm logs collected). **The load-bearing
+   config: `multiline.parser cri`** on the tail input — decodes
+   containerd's `<rfc3339> stdout F msg` format and re-stitches
+   P/F-split long lines; a docker/JSON parser would silently mangle
+   every line. `kubernetes` filter enriches with pod metadata; `loki`
+   output ships to `loki.monitoring.svc:3100` with labels
+   namespace/pod/container/node/job.
+3. **Grafana Loki datasource** (`88ef6d2`): a ConfigMap labeled
+   `grafana_datasource=1` → the Grafana sidecar (Phase 7) auto-loads it
+   live, no restart. **Loki has no UI of its own — Grafana Explore IS
+   its UI** (logs + metrics in one pane; the ELK/Kibana contrast made
+   real). Verified: 7 namespaces shipping logs (incl kube-system =
+   cp), pulled a live `kube-apiserver` line from Loki via `query_range`.
+   LogQL model demonstrated: `{labels}` indexed (fast) + `|= "text"`
+   greps chunks; extract nested message with `| json | line_format
+   "{{.log}}"`.
+
+**Observability now complete: metrics (Prometheus) + mesh (Kiali) +
+logs (Loki), all in one Grafana.** Missing pillar = distributed tracing
+(Jaeger/Tempo) — a known later add. Next: Phase 8 (Argo adoption) or
+Block 11 (CI/CD).
 
 ## Phase 8 — Argo CD + root-app; platform adopted as Argo apps
 

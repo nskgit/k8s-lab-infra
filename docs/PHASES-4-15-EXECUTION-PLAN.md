@@ -283,17 +283,43 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 
 ### Phase 7 — Observability (metrics) + 7b (logging)
 
-> **Phase 7 metrics: ✅ COMPLETE** (2026-07-11). All items 1–5 below are
-> done. Phase 7b (item 6) is next actionable — see
-> `docs/CURRENT-STATE.md` "Where we paused".
+> **Phase 7 (metrics) + 7-istio (telemetry/Kiali) + 7b (logging): ✅ ALL
+> COMPLETE** (2026-07-11 → 07-13).
 >
-> Commits: `3c430d0` (pre-work: bind-address + NSG rules) → `dd14a27`
-> (kps install, cpu:null fix) → `7e9f9bb` (metrics-server).
+> Commits: `3c430d0` (bind-address + NSG) → `dd14a27` (kps, cpu:null fix)
+> → `7e9f9bb` (metrics-server) → `1bffc6e` (istio ServiceMonitor+PodMonitor
+> APPLIED + Kiali 2.28.0) → `3420902` (podinfo app-metrics demo) →
+> `834dc49` (Loki SingleBinary) → `88ef6d2` (Fluent Bit + Loki datasource).
 >
-> Values files: `k8s/observability/kps-values.yaml` (kube-prometheus-stack
-> 87.12.3, ~200 lines), `k8s/observability/metrics-server-values.yaml`
-> (~60 lines). Both installed with `--disable-openapi-validation`
-> (SSH-tunnel bandwidth for apiserver OpenAPI schema).
+> Values files under `k8s/observability/`: kps-values (87.12.3),
+> metrics-server-values, istio-telemetry, kiali-values, loki-values,
+> fluent-bit-values, loki-grafana-datasource; plus `k8s/demo/podinfo.yaml`.
+> All helm installs used `--disable-openapi-validation` (SSH-tunnel
+> bandwidth for the apiserver OpenAPI schema).
+>
+> **As-built additions beyond items 1–6 below:**
+> - **item 4 (Istio telemetry) DONE**: ServiceMonitor (istiod :15014) +
+>   PodMonitor (envoy :15090) applied; verified istiod up=1, envoy up=9/9,
+>   istio_requests_total flowing. **Kiali 2.28.0** installed (anonymous
+>   auth, reads our Prometheus + k8s API; Grafana = deep-link only;
+>   tracing off). Service graph confirmed live.
+> - **app-metrics demo (podinfo)**: proves the "app metrics are opt-in"
+>   model — one pod measured by 3 pipelines at once (app PodMonitor :9797,
+>   envoy PodMonitor :15090, kubelet/cAdvisor resources). Two-job split:
+>   developer INSTRUMENTS (client library exposes /metrics), ops/dev WIRES
+>   (ServiceMonitor/PodMonitor — Prometheus-Operator CRDs). **Phase 9
+>   shared chart must template a ServiceMonitor** alongside Deployment/
+>   Service/HTTPRoute/DestinationRule. 3rd-party apps → exporter sidecar;
+>   OpenTelemetry = emerging vendor-neutral alt.
+> - **item 6 (7b logging) DONE**: Loki SingleBinary (5Gi local-path, 72h,
+>   tsdb v13; all microservices/gateway/caches/canary disabled) + Fluent
+>   Bit DS (multiline.parser **cri** — the load-bearing bit; cp toleration
+>   → apiserver/etcd/scheduler logs collected) + Loki Grafana datasource
+>   (ConfigMap labeled grafana_datasource=1 → sidecar auto-loads). Loki
+>   has NO UI — Grafana Explore IS its UI (the ELK-vs-Loki one-pane point).
+>   Verified: 7 namespaces shipping, live apiserver log pulled from Loki.
+>   ELK was considered + rejected on RAM (~4GB + ES OOM-fragile vs Loki
+>   ~0.7GB) — kept as an interview talking point.
 
 1. **bind-address fix** ✅ done — the "live edit" language below understated
    the right procedure. What was actually done follows the kubeadm-documented

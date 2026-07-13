@@ -528,3 +528,89 @@ Working knowledge from walking through the live install:
 
 Interview-critical: **alerts stay firing in Prometheus regardless of silences/inhibitions.**
 Alertmanager only decides whether/where to notify. Firing counts are always accurate.
+
+---
+
+## 10. Istio telemetry/Kiali, app-metrics, Loki+Fluent Bit logging (2026-07-13)
+
+### Prometheus scrape topology (the full mental model)
+
+Prometheus scrapes what **advertises `/metrics` and is registered** — it
+does NOT auto-scrape every pod:
+
+| Source | Mechanism | What it yields | Covers |
+|---|---|---|---|
+| node-exporter (DS) | ServiceMonitor | host CPU/mem/disk/net (`node_*`) | every node |
+| kube-state-metrics (Deploy) | ServiceMonitor | k8s object STATE (`kube_*`: replicas, pod phase) | cluster objects |
+| kubelet / cAdvisor | ServiceMonitor (kps-kubelet) | per-CONTAINER resource use (`container_*`) | **every container, automatic** |
+| istiod | ServiceMonitor `:15014` | control-plane (`pilot_xds_pushes`…) | istiod |
+| Envoy sidecars+gateways | PodMonitor `:15090` | mesh (`istio_requests_total`) | injected pods + gateways |
+| an app | ServiceMonitor/PodMonitor on the app's port | the app's OWN metrics | **only if instrumented + wired** |
+
+NOT scraped by Prometheus: **metrics-server** (separate `metrics.k8s.io`
+aggregation API for `kubectl top`/HPA — parallel pipeline), and app
+containers with no `/metrics` + no monitor.
+
+### App metrics are two jobs (interview-load-bearing)
+
+1. **Instrument** (developer): app code exposes `/metrics` via a client
+   library — Go `client_golang`, Java Micrometer/Actuator, Python
+   `prometheus_client`, Node `prom-client`. Without this there is
+   nothing to scrape.
+2. **Wire** (dev or platform): a `ServiceMonitor`/`PodMonitor` tells
+   Prometheus to scrape it. Often bundled in the app's own Helm chart.
+
+`ServiceMonitor`/`PodMonitor` are **Prometheus-Operator CRDs**, not a
+Prometheus-server feature. Three parties, separate pods in our cluster:
+you write the CR (intent) → `kps-operator` pod (controller) watches it,
+generates the scrape config → `prometheus-kps-prometheus-0` (server)
+consumes the config + scrapes. Without the operator the CR is inert.
+`kind` is fixed by the CRD; `metadata.name` is any DNS-1123 string.
+Vanilla Prometheus alternative: `prometheus.io/scrape` pod annotations +
+hand-written `kubernetes_sd_configs`. 3rd-party black boxes → an
+**exporter** sidecar (`postgres_exporter`, `redis_exporter`…). Emerging
+alt: OpenTelemetry (OTLP → Collector).
+
+**podinfo demo:** one pod, three simultaneous pipelines — app
+PodMonitor (`:9797` → `http_requests_total`), envoy PodMonitor (`:15090`
+→ `istio_requests_total`), kubelet/cAdvisor (`container_memory_*`).
+Multi-arch `ghcr.io/stefanprodan/podinfo` (metrics on the `--port-metrics`
+port 9797, not the app port).
+
+### Kiali
+
+Reads **Prometheus + the k8s API** (Grafana is a deep-link only, not a
+data source). Real-time service graph from `istio_requests_total` — so
+it needs the Istio PodMonitor first, and the graph goes EMPTY without
+recent traffic (widen Duration / generate load; not a fault). `proxy-status`
+rows are proxies keyed by `pod.namespace` (one proxy per pod); the gateway
+that terminates TLS also subscribes to **SDS** (5 xDS types vs 4) — certs
+streamed over xDS, no file mounts, no restart on rotation.
+
+### Loki + Fluent Bit gotchas
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `kubectl exec loki-0 -- wget/curl` → executable not found | Loki image is distroless (metrics-server, echo, Loki — 3rd time) | Verify from the Mac via port-forward + curl, or read logs |
+| Loki `/ready` via `wget -q` returns non-zero even when healthy | `-q` masks the body; Loki serves 503+message until all components report | Check the body without `-q`, or hit `/loki/api/v1/labels` (success = ready) |
+| Loki boots with a schema error | loki 6.x needs an explicit `schemaConfig` (tsdb + v13) | Provide it in values (we did) |
+| Loki pod OK but chart pulls in extra components | chart defaults toward simple-scalable + gateway + memcached caches + canary + grafana-agent | `deploymentMode: SingleBinary` + disable read/write/backend/gateway/chunksCache/resultsCache/lokiCanary/monitoring.selfMonitoring |
+| Every container log line mangled | Fluent Bit default parser is docker/JSON; containerd writes CRI format `<rfc3339> stdout F msg` | `multiline.parser cri` on the tail INPUT — decodes + re-stitches P/F-split lines. THE load-bearing 7b config |
+| cp logs (apiserver/etcd) missing | Fluent Bit DS didn't schedule on the tainted cp | control-plane toleration on the DaemonSet |
+| Log line shows as JSON blob in Grafana | `Line_Format json` ships the whole record | query `| json | line_format "{{.log}}"` to show just the message |
+
+**Loki has no UI** — Grafana Explore IS its UI (contrast Kibana for ELK;
+this is the one-pane metrics+logs advantage). Endpoints: push/query
+`loki.monitoring.svc:3100`, push path `/loki/api/v1/push`. LogQL model:
+`{labels}` indexed (cheap, fast) + `|= "text"` greps chunks — the
+"index labels, grep content" design that makes Loki far lighter than ES.
+
+### ELK vs Loki decision (recorded)
+
+On this ~5 GB-unreserved free-tier cluster: ELK ≈ ES 2–3 GB + Kibana
+1 GB ≈ 4 GB, ES OOM-fragile (index corruption on OOM, not clean
+restart); Loki+Fluent Bit ≈ 0.7 GB, reuses Grafana. Chose Loki. The
+strong interview answer isn't "I ran ELK" — it's *why* Loki on a
+cloud-native/cost-sensitive platform (labels-only index + object-store
+chunks + one Grafana pane), reaching for ELK/OpenSearch only when
+full-text search at large volume is the actual requirement.
