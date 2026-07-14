@@ -355,6 +355,14 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 
 ### Phase 8 — Argo CD + adoption
 
+> **STATUS: ✅ COMPLETE 2026-07-14** (`e5ba00c`→`ba4082e`). All items below
+> executed as planned, plus as-built lessons in LEARNING-LOG §11 (releaseName
+> mandatory; controller 1Gi; failurePolicy + caBundle ignoreDifferences;
+> Endpoints exclusion override; Kiali skipped — non-deterministic signing_key;
+> who-manages-the-root). Fleet: 10/10 Synced/Healthy, automated+selfHeal on
+> (prune off on CRD carriers + root). Journal: PHASES-COMPLETED §Phase 8.
+
+
 1. Trimmed install: dex/notifications off, single replicas, access via port-forward over the
    SSH tunnel (not the LB). ~1–1.2 Gi footprint.
 2. **Before adopting anything**: `application.resourceTrackingMethod: annotation` in argocd-cm

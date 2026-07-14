@@ -474,9 +474,50 @@ logs (Loki), all in one Grafana.** Missing pillar = distributed tracing
 (Jaeger/Tempo) — a known later add. Next: Phase 8 (Argo adoption) or
 Block 11 (CI/CD).
 
-## Phase 8 — Argo CD + root-app; platform adopted as Argo apps
+## Phase 8 — Argo CD + GitOps adoption of the whole platform ✅
 
-_TBD_
+Completed 2026-07-14. Commits `e5ba00c` → `ba4082e`.
+
+1. **Argo CD 3.4.5** (argo-cd chart 10.1.3, trimmed: no dex/notifications,
+   single replicas) in `argocd` ns. `application.resourceTrackingMethod:
+   annotation` (label tracking collides with Helm instance labels inside
+   immutable selectors). Private repo via **read-only SSH deploy key**
+   (repo-scoped; private key in `~/.k8s-lab-secrets/argocd/`, Secret
+   created via kubectl — D4).
+2. **Adoption pattern proven** (podinfo first, then metrics-server, loki,
+   fluent-bit, kps, istio ×4): Application pins the EXACT installed chart
+   version + the same values file (multi-source, `ref/$values`) → render
+   == live → pre-sync diff shows tracking-annotation-only → sync =
+   `configured` (adopt-in-place, zero pod restarts across the entire
+   phase) → delete `sh.helm.release.v1.*` secrets (NEVER helm uninstall).
+3. **Six hard lessons** (detail in LEARNING-LOG §11): helm.releaseName
+   mandatory; controller OOM at 512Mi (kps = the breaker; wedged syncs);
+   istio webhook failurePolicy runtime flip → ignoreDifferences; Kiali's
+   random signing_key = non-deterministic render → NOT adopted (stays
+   Helm-managed, documented exception); Argo 3.x default Endpoints
+   exclusion broke kps's static-pod scrape objects on rebuild → override;
+   who-manages-the-root (root-app's own yaml needs kubectl apply or
+   self-management).
+4. **platform-root app-of-apps** (`k8s/argocd/root-app.yaml`): one
+   Application watching `k8s/argocd/apps/` — the 9 children are its
+   resources. Rebuild = Ansible installs Argo → apply ONE file →
+   platform cascades by sync-wave (istio-base 0 → istiod 1 → gateways 2).
+5. **Auto-sync + selfHeal enabled fleet-wide** (`ba4082e`): prune true on
+   7 ordinary apps; prune FALSE on CRD carriers (istio-base, kps) and on
+   platform-root (children carry finalizers — pruning would cascade-
+   delete components). No precedence between root/child policies — they
+   govern disjoint object sets (root: Application objects; children:
+   component resources). Drift demo validated: pod delete healed by
+   Kubernetes (ReplicaSet, Argo uninvolved); `kubectl scale` reverted by
+   selfHeal in seconds.
+6. **GitOps horizon reaffirmed** (D3): CNI/CCM/CSI stay Ansible-owned —
+   in-cluster Argo cannot deliver day-1 CNI/CCM (no network / uninit
+   taint deadlock). Industry patterns recorded: A bootstrap-owns-both
+   (ours), B bootstrap day-1 + GitOps day-2 adoption, C hub-and-spoke
+   management cluster. Pattern B = Phase 15 stretch candidate.
+
+End state: 10/10 Applications Synced/Healthy; git push = deployment;
+drift auto-reverts; helm manages only kiali.
 
 ## Phase 9 — Wave-1 services → CI → dev
 

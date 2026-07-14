@@ -614,3 +614,56 @@ strong interview answer isn't "I ran ELK" — it's *why* Loki on a
 cloud-native/cost-sensitive platform (labels-only index + object-store
 chunks + one Grafana pane), reaching for ELK/OpenSearch only when
 full-text search at large volume is the actual requirement.
+
+---
+
+## 11. Phase 8 — Argo CD adoption (2026-07-13/14)
+
+### The adoption recipe (per component)
+
+1. Read installed version: `helm -n <ns> list --filter '^<release>$'`.
+2. Application: multi-source (chart@EXACT version + values via
+   `ref/$values`), **`helm.releaseName: <release>` ALWAYS** (Argo
+   defaults it to the app name → subcharts render as duplicates —
+   node-exporter would have double-deployed on hostPort 9100).
+3. `kubectl apply` the Application (manual sync) → **diff before sync**
+   (UI App Diff, or the API classifier: pull
+   `/api/v1/applications/<app>/managed-resources`, deep-diff
+   normalizedLiveState vs predictedLiveState, filter tracking-id/
+   caBundle/managedFields). Annotations-only = safe.
+4. Sync → resources say `configured` (adopted), never `created`; pods
+   keep AGE/restarts.
+5. Delete `sh.helm.release.v1.<release>.*` secrets — Helm's bookkeeping
+   only. **NEVER `helm uninstall`** (deletes live resources).
+
+### Gotchas (symptom → cause → fix)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Diff shows `<appname>-*` resources to CREATE | Argo defaulted Helm releaseName to Application name | `helm.releaseName:` = the installed release. Mandatory habit |
+| Sync wedged "Running", 0 tasks, 90+ min; CLI timeouts; hook "resource missing" | **Controller OOMKilled** (512Mi) — kps's 116 resources + multi-MB CRDs; controller memory scales with the LARGEST app | 1Gi limit; delete stuck pod; clear `.operation` (patch remove); re-sync `strategy: apply`. Check `lastState.terminated.reason` FIRST when syncs wedge |
+| istio webhooks perpetually OutOfSync | istiod flips failurePolicy Ignore→Fail at runtime (fail-open bootstrap) | ignoreDifferences on `webhooks[].failurePolicy` (same family: kps caBundle) |
+| Kiali always OutOfSync + would restart every sync | chart bakes `randAlphaNum` signing_key into ConfigMap per render — non-deterministic | Pin the value, or don't adopt. We skipped (anonymous auth = inert key; chart has no external-secret support). **Determinism is a GitOps prerequisite** |
+| ExcludedResourceWarning on kps Endpoints | Argo 3.x default `resource.exclusions` blocks v1/Endpoints; kps hand-crafts 2 for static-pod scrapes → rebuild would skip them | Override exclusions = shipped default MINUS core Endpoints (keep EndpointSlice etc.) |
+| Root-app's own policy change didn't take effect | Nothing manages the root — its sync applies children, not itself | `kubectl apply` root-app.yaml after editing it (or place it in its own watched dir = self-management) |
+| PreSync hook Job "is missing" errors | Job TTL/hook-delete races (aggravated by controller crashes) | Retry; or `strategy: apply` skips hooks — safe when hook outputs (webhook cert secret) already exist |
+| argocd CLI gRPC "error dial proxy" over port-forward | flaky gRPC-over-forward | `ARGOCD_OPTS='--core'` + kube-context ns=argocd (talks straight to k8s API); for big apps use the REST API (session token) |
+
+### Design rules locked in
+
+- **Two healing layers**: Kubernetes controllers heal runtime (delete a
+  pod → ReplicaSet recreates, Argo uninvolved); Argo selfHeal heals
+  DECLARED objects (scale/edit/delete a Deployment → reverted/recreated).
+- **Prune safety split**: prune on for ordinary apps; OFF for CRD
+  carriers (CRD delete = every CR of that kind dies) and for the root
+  (children carry finalizers → prune = cascade-delete a component).
+- **No precedence root vs child policies** — disjoint object sets:
+  root governs Application objects, child governs its component
+  resources (Deployment→RS→Pod analogy).
+- **GitOps horizon**: in-cluster Argo can never do day-1 CNI/CCM (no
+  network / uninitialized-taint deadlock). Patterns: A bootstrap owns
+  both days (ours) · B bootstrap day-1 + GitOps day-2 adoption (the
+  cilium-in-Flux repos) · C hub-and-spoke management cluster (fleet).
+- Argo reconciles **k8s API objects only** — CRD+operator (Crossplane
+  et al) is how GitOps extends to cloud infra; we keep TF (industry
+  default).
