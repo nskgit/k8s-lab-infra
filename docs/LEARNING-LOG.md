@@ -678,3 +678,12 @@ full-text search at large volume is the actual requirement.
 | Fresh rebuild would fail at sync-wave 0 | Every app sets CreateNamespace=false but NO Namespace object existed in git (hole existed since Phase 8, surfaced by review) | The `namespaces` app (wave -1) declares istio-system/monitoring/demo/apps with live labels (istio-injection) |
 | 13 live objects (Gateways, monitors, demo apps, blog) invisible to drift-heal and absent from rebuild | "In git" ≠ "GitOps" — kubectl-applied files nothing watches. The most common real-world GitOps failure mode: partial adoption | Coverage sweep → adopt everything or name the owner (StorageClass = Ansible/D3, Kiali = Helm exception, blog Secret = never-in-git) |
 | Backing out a bad adoption deletes live resources | Applications carry resources-finalizer from birth; post-first-sync delete = cascade | Abort with `argocd app delete <app> --cascade=false` (or strip the finalizer first) — runbook now in gitops/bootstrap/README |
+
+**Repo-split cutover (2026-07-16, B11-0a):** two-repo splits have NO
+freeze window when sequenced right — push the NEW repo first, re-point
+root-app, verify, THEN remove the old tree. (Contrast: the 8.5 same-repo
+rename forced a ComparisonError window because old and new paths could
+not coexist on one branch.) Also: `git subtree split -P <dir>` carries a
+directory's history into a standalone repo; Argo repo credentials are
+matched by URL, so a split = new deploy key + new labeled Secret + repoURL
+edits — destination/tracking untouched, so resources never notice.

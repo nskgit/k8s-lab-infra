@@ -5,21 +5,6 @@ GitOps-managed by Argo CD with auto-sync + selfHeal live (drift-undo
 validated). Git push = deployment. **Next: user picks** — Block 11 (CI/CD),
 Phase 9 (wave-1 apps), or smaller items below.
 
-## ⏰ MORNING CUTOVER — repo split staged 2026-07-15 night, 2 user steps left
-
-Everything is prepped and validated; local repo `~/workspace/k8s-lab-gitops`
-(remote set, commit `5b09ebc`) is ready to push. Argo Secret
-`repo-k8s-lab-gitops` already in cluster. USER does (60s total):
-1. github.com/new → create PRIVATE repo `k8s-lab-gitops` (no README/license).
-2. Repo → Settings → Deploy keys → Add: paste
-   `~/.k8s-lab-secrets/argocd/argocd-gitops-deploy.key.pub`
-   (title `argocd-readonly`, do NOT allow write).
-Then Claude finishes: push new repo → kubectl apply
-`~/workspace/k8s-lab-gitops/bootstrap/root-app.yaml` → fleet re-points
-(15/15, no freeze window — old tree still exists in infra repo during
-cutover) → push held infra cleanup commit → delete old
-`repo-k8s-lab-infra` secret → final docs/memory sweep.
-
 **New session opener:**
 > Read `docs/CURRENT-STATE.md` and `docs/PHASES-COMPLETED.md` §Phase 8.
 > Phases 0-5a, 6, 7(+7b), 8 are complete. Pick up from "Next options".
@@ -87,7 +72,7 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 | P9-0a | Demo A — GitOps rolling update (podinfo tag bump) | Phase 9 pre-work | ready anytime |
 | P9-0b | Demo B — git-driven canary (echo 90/10→50/50 via commit) | Phase 9 pre-work | ready — prereq done 2026-07-15 |
 | P9 | Demo C — Argo Rollouts (automated canary; top of the A→B→C ladder) | Phase 9 proper | with Phase 9 |
-| B11-0a | Gitops repo split | Block 11 step 0 | DECIDED+staged; morning cutover (see banner) |
+| B11-0a | Gitops repo split | Block 11 step 0 | ✅ DONE 2026-07-16 — Argo now reads nskgit/k8s-lab-gitops |
 | B11-0b | Demo D — TF workspaces (zero-cost, env:/ prefixes) | Block 11 pre-work | ready anytime |
 | B11/12+14 | Fully-automated multi-env (CI matrix per env root; DR = capstone) | Block 11/12 + Phase 14 | follows D |
 
