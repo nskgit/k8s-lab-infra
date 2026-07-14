@@ -26,7 +26,8 @@ Full master plan and architecture diagrams live in `docs/`. Practical operator q
   `k8s-lab-tfstate` bucket, consumes `bootstrap`'s outputs.
 - `terraform/dr/` — stub for the future DR region (Phase 14).
 - `ansible/` — OS-to-cluster bootstrap roles (Phase 5a; 8 idempotent roles).
-- `kubeadm/` — `ClusterConfiguration.yaml` (Phase 2).
+- `docs/round1-artifacts/kubeadm/` — Round-1 manual kubeadm configs (Phase 2,
+  historical reference; live config is templated by the `kubeadm-cp` Ansible role).
 - GitOps content moved to its OWN repo 2026-07-15 (Block 11 step 0):
   **github.com/nskgit/k8s-lab-gitops** — bootstrap/, applications/,
   platform/, workloads/. This repo = cloud + cluster substrate only.

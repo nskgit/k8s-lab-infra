@@ -23,7 +23,8 @@ oci_ccm_version:           "v1.33.2"       # ghcr.io/oracle/cloud-provider-oci
 oci_csi_version:           "v1.33.2"       # same image tag
 snapshotter_crds_version:  "v6.3.4"        # kubernetes-csi/external-snapshotter CRD release
 
-# Cluster networking — MUST match kubeadm/ClusterConfiguration.yaml
+# Cluster networking — MUST match docs/round1-artifacts/kubeadm/ClusterConfiguration.yaml
+# (the Round-1 manual artifact; the LIVE config is templated by the kubeadm-cp role)
 cluster_name:              "k8s-lab"
 pod_subnet:                "10.244.0.0/16"
 service_subnet:            "10.96.0.0/16"
