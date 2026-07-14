@@ -63,7 +63,9 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 
 1. **Block 11 — CI/CD workflows** (top candidate; the deferred
    industry-standard session): PR checks + tf plan/ansible --check on
-   PR + gated apply; dynamic inventory; Makefile; cp IP pin D9.
+   PR + gated apply; dynamic inventory; Makefile; cp IP pin D9;
+   security gates adopted 2026-07-14: tflint · tfsec · gitleaks · Dependabot
+   (full bucketing in execution plan §Block 11 addendum).
 2. **Phase 9 — wave-1 apps**: OCIR robot users, shared chart
    (Deployment/Service/HTTPRoute/DestinationRule/ServiceMonitor
    templates — rules already captured in plan row 7/9), CI → dev.

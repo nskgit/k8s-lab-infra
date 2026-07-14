@@ -157,6 +157,52 @@ Cost while the demo volume lives: ~$1.28/mo. Delete it after the gate if you wan
 > **CI/CD status: ⏳ deferred to Block 11** — full industry-standard PR-driven
 > pipeline session. Notes below in "CI workflow specifics" remain valid.
 
+**Block 11 addendum (2026-07-14) — gap analysis vs a production-grade reference
+pipeline.** Compared our design against a maximal enterprise CI/CD+GitOps reference;
+the skeleton matched block-for-block (PR-driven · plan artifact · gated apply ·
+separate app CI · gitops hub · pull-only CD · revert rollback). Adopted the
+industry-standard deltas:
+
+- **Block 11 (infra CI) adds**: tflint · tfsec · gitleaks on the infra repo ·
+  Dependabot (TF providers + GitHub Actions). ansible-lint already in scope.
+- **Phase 9 adds**: Trivy image scan + gitleaks in app CI · in-cluster
+  NetworkPolicies (Calico enforces natively — zero new components) · Pod Security
+  Admission `restricted` labels on app namespaces · Argo Rollouts (automated
+  canary — we already run the mechanism manually via weighted backendRefs) ·
+  Tempo tracing (already parked here).
+- **Phase 15 stretch adds**: cosign + Kyverno image-verification as ONE bundled
+  SLSA item (signing without admission verification is theater) · kube-bench
+  (CIS) · apiserver audit policy. Sealed Secrets/ESO already listed.
+- **Named permanent skips (lab compromises)**: qa/staging environments (capacity,
+  D10) · CAB/CODEOWNERS multi-team governance (solo — the required-reviewer
+  environment gate is the equivalent) · Vault (D4 stands).
+- Reference-diagram corrections to remember: Argo polls git every **3 min** by
+  default (webhook for instant), not "seconds"; managed-K8s pipelines don't
+  Ansible their nodes — our bigger Ansible layer is the self-managed kubeadm
+  difference.
+
+**Coverage demos requested 2026-07-14 (deployment strategies + TF workspaces):**
+
+- **Demo A — GitOps rolling update** (anytime, 10 min): bump podinfo image tag
+  in git → Argo auto-syncs → watch the ReplicaSet rollover. Teaching point:
+  Argo applies intent; the Deployment controller performs the rolling update.
+- **Demo B — GitOps-driven canary** (anytime, ~20 min): adopt echo/echo-v2
+  into Argo (currently hand-applied, outside GitOps), then shift the HTTPRoute
+  weights 90/10 → 50/50 via git commit. Teaching point: the mesh always does
+  the splitting; maturity levels only change WHO edits the weights (human
+  kubectl → git commit → Rollouts controller).
+- **Demo C — automated canary** = Argo Rollouts at Phase 9 (adopted above).
+  GitOps wrinkle to remember: Rollouts mutates weights at runtime →
+  ignoreDifferences needed (same lesson family as istio failurePolicy, §11).
+- **Demo D — Terraform workspaces** (anytime, zero cost): terraform/workspace-demo
+  with a trivial resource on the real OCI backend — workspace new/select/show,
+  env:/ state prefixes visible in the bucket, terraform.workspace interpolation,
+  wrong-workspace footgun. Then contrast with our dir-per-env pattern
+  (modules + primary/ + dr/, decisions #16/#17) = the industry standard for
+  real envs; workspaces = ephemeral same-shape stacks (per-PR previews).
+  Constraint: a REAL second VM env bills (Always-Free budget fully consumed);
+  full multi-env automation = CI matrix (Block 11/12) + DR root (Phase 14).
+
 **Step 0 (before any CI): repo hygiene**
 - `git add -A && git commit` + create GitHub repo + push (D5).
 - **Fix the dual-provider bug**: every module binds to implicit `hashicorp/oci` (8.21.0!) while
