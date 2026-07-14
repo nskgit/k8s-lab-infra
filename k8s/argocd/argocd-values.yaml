@@ -28,6 +28,63 @@ configs:
     # inside IMMUTABLE selectors (Deployments/StatefulSets) — adoption
     # would fail on "field is immutable". Annotation tracking sidesteps it.
     application.resourceTrackingMethod: annotation
+
+    # Argo 3.x default exclusions MINUS core v1/Endpoints. Why: kps
+    # hand-crafts two selectorless-Service Endpoints (kube-controller-
+    # manager + kube-scheduler scrape targets on the cp IP). With the
+    # default exclusion Argo won't manage them → a from-scratch rebuild
+    # would silently skip creating them → KCM/scheduler scrapes born
+    # broken. Trade-off accepted: Argo now watches all v1 Endpoints
+    # (negligible churn at our ~30-Service scale). EndpointSlice + every
+    # other default exclusion (Leases, auth reviews, CSRs, Cilium,
+    # Kyverno) kept verbatim from the shipped default.
+    resource.exclusions: |
+      - apiGroups:
+        - discovery.k8s.io
+        kinds:
+        - EndpointSlice
+      - apiGroups:
+        - coordination.k8s.io
+        kinds:
+        - Lease
+      - apiGroups:
+        - authentication.k8s.io
+        - authorization.k8s.io
+        kinds:
+        - SelfSubjectReview
+        - TokenReview
+        - LocalSubjectAccessReview
+        - SelfSubjectAccessReview
+        - SelfSubjectRulesReview
+        - SubjectAccessReview
+      - apiGroups:
+        - certificates.k8s.io
+        kinds:
+        - CertificateSigningRequest
+      - apiGroups:
+        - cert-manager.io
+        kinds:
+        - CertificateRequest
+      - apiGroups:
+        - cilium.io
+        kinds:
+        - CiliumIdentity
+        - CiliumEndpoint
+        - CiliumEndpointSlice
+      - apiGroups:
+        - kyverno.io
+        - reports.kyverno.io
+        - wgpolicyk8s.io
+        kinds:
+        - PolicyReport
+        - ClusterPolicyReport
+        - EphemeralReport
+        - ClusterEphemeralReport
+        - AdmissionReport
+        - ClusterAdmissionReport
+        - BackgroundScanReport
+        - ClusterBackgroundScanReport
+        - UpdateRequest
   params:
     # Port-forward over the SSH tunnel → skip server-side TLS (no cert
     # juggling for an internal-only UI). We reach it via localhost.
