@@ -32,6 +32,13 @@ spec:
     server: https://kubernetes.default.svc
     namespace: argocd            # child Application objects live in argocd ns
   syncPolicy:
-    # Manual sync during rollout; automated+selfHeal is the later flip.
+    # Auto-sync (P8-29): new/changed child Application yamls in
+    # k8s/argocd/apps/ apply themselves. PRUNE OFF deliberately: children
+    # carry resources-finalizers, so pruning a child Application would
+    # CASCADE-DELETE its entire component — removing a platform component
+    # stays a deliberate manual act (delete yaml + manual prune-sync).
+    automated:
+      prune: false
+      selfHeal: true
     syncOptions:
       - CreateNamespace=false

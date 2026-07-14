@@ -31,6 +31,13 @@ spec:
     server: https://kubernetes.default.svc
     namespace: istio-system
   syncPolicy:
+    # Auto-sync (P8-29): selfHeal on, PRUNE OFF — this app carries CRDs;
+    # a chart refactor must never cascade-delete CRDs (deleting a CRD
+    # deletes every CR of that kind cluster-wide). CRD removal stays a
+    # deliberate manual act.
+    automated:
+      prune: false
+      selfHeal: true
     syncOptions:
       - ServerSideApply=true
       - CreateNamespace=false

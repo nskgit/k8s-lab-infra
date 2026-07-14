@@ -29,6 +29,11 @@ spec:
     server: https://kubernetes.default.svc
     namespace: istio-system
   syncPolicy:
+    # Auto-sync (P8-29): git change deploys itself; live drift reverts in
+    # seconds (selfHeal); resource removed from git is deleted (prune).
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - ServerSideApply=true
       - CreateNamespace=false
