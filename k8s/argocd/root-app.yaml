@@ -1,0 +1,37 @@
+# ============================================================================
+# platform-root — the app-of-apps. Its "resources" are the Application
+# objects in k8s/argocd/apps/: one Argo app that manages all the others.
+#
+# Rebuild story: Ansible installs Argo → kubectl apply THIS ONE FILE →
+# the whole platform cascades (children created here, each child then
+# syncs its component in sync-wave order: base 0 → istiod 1 → gateways 2).
+#
+# Membership = the directory listing. Add a component: commit a new
+# Application yaml into k8s/argocd/apps/. (Pruning on child removal is
+# deliberately OFF for now — enable automated+prune later, after the
+# auto-sync decision.)
+#
+#   kubectl apply -f k8s/argocd/root-app.yaml     (the last manual apply)
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:nskgit/k8s-lab-infra.git
+    targetRevision: main
+    path: k8s/argocd/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd            # child Application objects live in argocd ns
+  syncPolicy:
+    # Manual sync during rollout; automated+selfHeal is the later flip.
+    syncOptions:
+      - CreateNamespace=false
