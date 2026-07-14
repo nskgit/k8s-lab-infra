@@ -667,3 +667,14 @@ full-text search at large volume is the actual requirement.
 - Argo reconciles **k8s API objects only** — CRD+operator (Crossplane
   et al) is how GitOps extends to cloud infra; we keep TF (industry
   default).
+
+### §11 addendum — 2026-07-15 restructure (k8s/ → gitops/) lessons
+
+| Symptom / risk | Cause | Fix / rule |
+|---|---|---|
+| Whole fleet ComparisonError after a tree rename lands | Root app isn't self-managed ("who manages the root") — live root still watches the old path | Rename = ONE atomic push + immediate `kubectl apply` of the new root-app. The error window is a FREEZE, not a hazard: Argo can't compute state so nothing syncs, and allowEmpty=false blocks prune-to-zero |
+| platform-root permanently OutOfSync on 2 new children | `directory: {recurse: false}` is the API default → server normalizes it away → git ≠ live forever | Never declare default values in Application specs |
+| Pruning a demo app could delete the whole demo namespace (incl. podinfo, owned by ANOTHER app) | echo.yaml carried the `kind: Namespace` — a workload app owned its own namespace | Namespaces get their own wave "-1" Application; every Namespace annotated `argocd.argoproj.io/sync-options: Prune=false`; workload apps NEVER contain Namespace objects |
+| Fresh rebuild would fail at sync-wave 0 | Every app sets CreateNamespace=false but NO Namespace object existed in git (hole existed since Phase 8, surfaced by review) | The `namespaces` app (wave -1) declares istio-system/monitoring/demo/apps with live labels (istio-injection) |
+| 13 live objects (Gateways, monitors, demo apps, blog) invisible to drift-heal and absent from rebuild | "In git" ≠ "GitOps" — kubectl-applied files nothing watches. The most common real-world GitOps failure mode: partial adoption | Coverage sweep → adopt everything or name the owner (StorageClass = Ansible/D3, Kiali = Helm exception, blog Secret = never-in-git) |
+| Backing out a bad adoption deletes live resources | Applications carry resources-finalizer from birth; post-first-sync delete = cascade | Abort with `argocd app delete <app> --cascade=false` (or strip the finalizer first) — runbook now in gitops/bootstrap/README |

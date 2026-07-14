@@ -9,8 +9,8 @@
 # Secret must be recreated by hand/Ansible BEFORE this app syncs, or
 # MariaDB/WordPress pods will hang on missing env refs.
 #
-# MANUAL sync first (no syncPolicy.automated): inspect the diff, sync by
-# hand, then flip to automated+selfHeal+prune with the fleet policy.
+# Adopted 2026-07-15: first sync verified annotations-only, resources
+# 'configured' (zero restarts); automated+selfHeal+prune since same day.
 # ============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -25,11 +25,13 @@ spec:
     repoURL: git@github.com:nskgit/k8s-lab-infra.git
     targetRevision: main
     path: gitops/workloads/blog
-    directory:
-      recurse: false
   destination:
     server: https://kubernetes.default.svc
     namespace: apps
   syncPolicy:
+    # Fleet policy (flipped 2026-07-15 after verified adoption sync):
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=false

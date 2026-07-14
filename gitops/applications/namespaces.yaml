@@ -8,9 +8,8 @@
 # Each Namespace manifest carries Prune=false, so even with the fleet
 # prune policy this app can never delete a namespace.
 #
-# MANUAL sync first (no syncPolicy.automated): inspect the diff (adopting
-# the 4 LIVE namespaces — expect tracking annotations only), sync by
-# hand, then flip to automated+selfHeal+prune with the fleet policy.
+# Adopted 2026-07-15: first sync verified annotations-only, resources
+# 'configured' (zero restarts); automated+selfHeal+prune since same day.
 # ============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -27,11 +26,14 @@ spec:
     repoURL: git@github.com:nskgit/k8s-lab-infra.git
     targetRevision: main
     path: gitops/platform/namespaces
-    directory:
-      recurse: false
   destination:
     server: https://kubernetes.default.svc
     namespace: default          # Namespaces are cluster-scoped; this is unused
   syncPolicy:
+    # Fleet policy (flipped 2026-07-15 after verified adoption sync):
+    # (each Namespace resource carries Prune=false — never prunable)
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=false

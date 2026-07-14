@@ -10,8 +10,8 @@
 # Values files in the same folder are NOT included (they belong to the
 # chart-based Applications via $values refs).
 #
-# MANUAL sync first (no syncPolicy.automated): inspect the diff, sync by
-# hand, then flip to automated+selfHeal+prune with the fleet policy.
+# Adopted 2026-07-15: first sync verified annotations-only, resources
+# 'configured' (zero restarts); automated+selfHeal+prune since same day.
 # ============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -32,5 +32,9 @@ spec:
     server: https://kubernetes.default.svc
     namespace: monitoring
   syncPolicy:
+    # Fleet policy (flipped 2026-07-15 after verified adoption sync):
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=false
