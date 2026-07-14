@@ -1,0 +1,33 @@
+# ============================================================================
+# Loki → Grafana datasource. Loki has NO UI of its own; Grafana IS its UI.
+#
+# The Grafana sidecar (grafana-sc-datasources, set up in Phase 7) watches
+# for ConfigMaps labeled grafana_datasource=1 in any namespace and loads
+# them live — no Grafana restart, no helm upgrade. This is the same
+# ConfigMap-provisioning pattern as the 27 dashboards.
+#
+#   kubectl apply -f gitops/platform/observability/loki-grafana-datasource.yaml
+# then: Grafana → Explore → pick "Loki" → query e.g. {namespace="apps"}
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-grafana-datasource
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"     # ← the sidecar's trigger label
+data:
+  loki-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        # Grafana (in-cluster) reaches Loki by its Service DNS.
+        url: http://loki.monitoring.svc.cluster.local:3100
+        jsonData:
+          # Cap query range so a fat LogQL query can't OOM Loki on our
+          # small nodes.
+          maxLines: 1000
+        # Not the default datasource (Prometheus stays default for metrics).
+        isDefault: false

@@ -1,0 +1,43 @@
+# ============================================================================
+# Argo Application — Loki (SingleBinary log store).
+#
+# Multi-source: chart loki@7.0.0 from the Grafana Helm repo + our
+# loki-values.yaml from git (ref/$values). Same adopt-in-place pattern.
+#
+# WATCH THE DIFF: Loki is a StatefulSet with a bound PVC. StatefulSet
+# selectors + volumeClaimTemplates are IMMUTABLE — if the diff shows any
+# change there (not just the tracking annotation), STOP: Argo can't
+# modify immutable fields in place and a sync could fail or force-replace.
+# Annotations-only diff = clean adoption.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: loki
+      targetRevision: 7.0.0              # must match the installed release
+      helm:
+        releaseName: loki       # explicit (matches installed release; §11 habit)
+        valueFiles:
+          - $values/gitops/platform/observability/loki-values.yaml
+    - repoURL: git@github.com:nskgit/k8s-lab-infra.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    # Auto-sync (P8-29): git change deploys itself; live drift reverts in
+    # seconds (selfHeal); resource removed from git is deleted (prune).
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false            # monitoring already exists

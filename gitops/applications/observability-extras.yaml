@@ -1,0 +1,36 @@
+# ============================================================================
+# Argo Application — observability-extras (hand-crafted monitoring objects
+# that live OUTSIDE the kube-prometheus-stack chart).
+#
+# Closes a GitOps coverage gap. Members (each carries its own namespace):
+#   istio-telemetry.yaml          ServiceMonitor istiod + PodMonitor envoy
+#   grafana-route.yaml            HTTPRoute grafana.<domain> → grafana svc
+#   loki-grafana-datasource.yaml  ConfigMap (grafana_datasource=1 sidecar)
+#
+# Values files in the same folder are NOT included (they belong to the
+# chart-based Applications via $values refs).
+#
+# MANUAL sync first (no syncPolicy.automated): inspect the diff, sync by
+# hand, then flip to automated+selfHeal+prune with the fleet policy.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability-extras
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:nskgit/k8s-lab-infra.git
+    targetRevision: main
+    path: gitops/platform/observability
+    directory:
+      include: '{istio-telemetry.yaml,grafana-route.yaml,loki-grafana-datasource.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false

@@ -1,0 +1,50 @@
+# ============================================================================
+# All platform/workload namespaces, declared in ONE place.
+#
+# Why this exists (found in the 2026-07-15 restructure review): every
+# Application sets CreateNamespace=false, but no Namespace object lived in
+# git — a from-scratch rebuild would fail at sync-wave 0 (istio-base needs
+# istio-system). The `namespaces` Application (sync-wave -1) creates these
+# before anything else lands.
+#
+# Every Namespace carries Prune=false: even if this file shrinks or the
+# owning app is misconfigured, Argo must NEVER prune a namespace — that
+# cascade-deletes every object inside it (and podinfo/blog live in
+# namespaces their own Applications don't own).
+#
+# istio-injection=enabled is THE switch for istiod's mutating webhook:
+# new pods in that namespace get the istio-proxy sidecar injected.
+# (argocd ns is NOT here — it's created by the Ansible argo-bootstrap
+# layer, which must exist before any Application can.)
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    istio-injection: enabled
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apps
+  labels:
+    istio-injection: enabled
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false

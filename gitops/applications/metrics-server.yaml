@@ -1,0 +1,46 @@
+# ============================================================================
+# Argo Application — metrics-server (first HELM adoption).
+#
+# Multi-source: the chart comes from the metrics-server Helm repo (pinned
+# to the EXACT installed version 3.13.1 so the render matches what's live),
+# and the values file comes from our git repo via `ref: values` → the
+# `$values/...` path in helm.valueFiles.
+#
+# Adopt in place: same chart version + same values = identical render, so
+# the only first-sync change is Argo's tracking annotation. Inspect with
+# `argocd app diff metrics-server` (annotations-only) BEFORE syncing.
+#
+# metrics-server does NOT need ServerSideApply (that's only for
+# kube-prometheus-stack's oversized CRDs later).
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metrics-server
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://kubernetes-sigs.github.io/metrics-server/
+      chart: metrics-server
+      targetRevision: 3.13.1            # must match the installed release
+      helm:
+        releaseName: metrics-server       # explicit (matches installed release; §11 habit)
+        valueFiles:
+          - $values/gitops/platform/observability/metrics-server-values.yaml
+    - repoURL: git@github.com:nskgit/k8s-lab-infra.git
+      targetRevision: main
+      ref: values                        # exposes this repo as $values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    # Auto-sync (P8-29): git change deploys itself; live drift reverts in
+    # seconds (selfHeal); resource removed from git is deleted (prune).
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false            # kube-system already exists

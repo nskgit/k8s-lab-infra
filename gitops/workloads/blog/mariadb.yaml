@@ -1,0 +1,91 @@
+# ============================================================================
+# MariaDB — the shared database for the blog demo (WordPress + Adminer).
+#
+# StatefulSet, not Deployment (the Phase 4 lesson): stable pod identity ↔
+# PVC binding via volumeClaimTemplate. Storage on local-path (default SC,
+# $0) — NAMED COMPROMISE: node dies = data dies. Production: oci-bv
+# (~$1.28/mo) so the volume detaches/reattaches with the pod.
+#
+# Credentials come from Secret blog-db-credentials (created via CLI,
+# never in git). Database + app user are created by the official image's
+# first-boot init from MARIADB_* env.
+#
+#   kubectl apply -f gitops/workloads/blog/mariadb.yaml
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: apps
+spec:
+  # ClusterIP = a virtual IP: no interface owns it; kube-proxy DNATs
+  # connections to the pod. Apps reach the DB as mariadb.apps.svc:3306.
+  selector:
+    app: mariadb
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+  namespace: apps
+spec:
+  serviceName: mariadb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+      annotations:
+        # Phase 9 capacity rule: NO sidecar on DB pods — east-west TCP
+        # gains little from the proxy; saves 25m/64Mi + a network hop.
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11.4   # LTS, multi-arch (arm64 for A1 nodes)
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: blog-db-credentials, key: root-password }
+            - name: MARIADB_DATABASE
+              value: wordpress
+            - name: MARIADB_USER
+              value: wp
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: blog-db-credentials, key: db-password }
+          # Official image ships healthcheck.sh — the documented probe method.
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: local-path
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi

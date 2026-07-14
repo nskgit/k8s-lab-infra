@@ -1,0 +1,46 @@
+# ============================================================================
+# Argo Application — istiod (control plane). SYNC-WAVE 1: after base's
+# CRDs, before the gateways (their Envoys fetch bootstrap from istiod).
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istiod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://istio-release.storage.googleapis.com/charts
+      chart: istiod
+      targetRevision: 1.30.2
+      helm:
+        releaseName: istiod
+        valueFiles:
+          - $values/gitops/platform/istio/istiod-values.yaml
+    - repoURL: git@github.com:nskgit/k8s-lab-infra.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    # Auto-sync (P8-29): git change deploys itself; live drift reverts in
+    # seconds (selfHeal); resource removed from git is deleted (prune).
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+  ignoreDifferences:
+    # istiod flips failurePolicy Ignore→Fail at runtime (fail-open
+    # bootstrap → fail-closed steady state). Not git drift.
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: istio-validator-istio-system
+      jqPathExpressions:
+        - '.webhooks[].failurePolicy'

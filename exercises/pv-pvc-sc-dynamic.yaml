@@ -1,0 +1,71 @@
+# =============================================================================
+# DYNAMIC provisioning — you write only SC and PVC.
+# K8s + the CSI driver create the PV and the OCI Block Volume automatically
+# when a Pod consumes the PVC. This is the standard / modern pattern.
+#
+# What Phase 4 Chunk C did, minus the StatefulSet shortcut. The StatefulSet's
+# volumeClaimTemplate is just a per-replica factory that generates PVCs like
+# the one below — nothing structurally different.
+#
+# Apply with:  kubectl apply -f exercises/pv-pvc-sc-dynamic.yaml
+# Cleanup:     kubectl delete -f exercises/pv-pvc-sc-dynamic.yaml
+# =============================================================================
+
+---
+# 1) StorageClass — the "recipe" for how to satisfy future PVCs.
+#    Nothing gets provisioned when THIS is created; it's a template.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: oci-bv-dynamic-demo
+provisioner: blockvolume.csi.oraclecloud.com   # ← the real CSI driver
+parameters:
+  vpusPerGB: "0"                                # Lower-Cost tier
+  attachment-type: "paravirtualized"            # no host iscsid dependency
+volumeBindingMode: WaitForFirstConsumer         # wait for a Pod to schedule (AD-local provisioning)
+allowVolumeExpansion: true
+reclaimPolicy: Delete                           # PVC delete → PV delete → volume TERMINATED
+
+---
+# 2) PersistentVolumeClaim — a REQUEST for storage. Does NOT specify a PV.
+#    K8s sees storageClassName: oci-bv-dynamic-demo and tells the CSI driver
+#    "make me a Block Volume". A PV is auto-generated.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: demo-dynamic
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: oci-bv-dynamic-demo
+  resources:
+    requests:
+      storage: 50Gi                             # OCI rounds up to 50 anyway
+
+---
+# 3) A Pod that consumes the PVC. On schedule, WaitForFirstConsumer fires,
+#    CSI creates the volume, attaches to the pod's node, formats + mounts.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-dynamic-writer
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: writer
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      echo "hello from $(hostname) at $(date -u)" >> /data/log.txt
+      echo "--- current contents of /data/log.txt ---"
+      cat /data/log.txt
+      echo "--- sleeping to keep pod around for inspection ---"
+      sleep 3600
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: demo-dynamic                   # ← binds pod to the PVC above

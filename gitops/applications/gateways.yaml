@@ -1,0 +1,37 @@
+# ============================================================================
+# Argo Application — gateways (Gateway API objects: lab-gateway + internal).
+#
+# Closes a GitOps coverage gap: these Gateway objects were kubectl-applied
+# in Phase 6 — in git but watched by nothing. Same adopt-in-place recipe as
+# Phase 8: identical manifests → first sync adds tracking annotations only.
+#
+# sync-wave 3: the Gateway objects reference the ingress gateway Services
+# (manual/spec.addresses mode), so they come after the gateway chart apps
+# (wave 2). Waves only matter on full rebuilds.
+#
+# MANUAL sync first (no syncPolicy.automated): inspect the diff, sync by
+# hand, then flip to automated+selfHeal+prune with the fleet policy.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateways
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:nskgit/k8s-lab-infra.git
+    targetRevision: main
+    path: gitops/platform/istio
+    directory:
+      include: '{gateway.yaml,internal-gateway.yaml}'   # ONLY the Gateway objects, not values files
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false

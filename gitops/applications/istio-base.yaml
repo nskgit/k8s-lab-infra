@@ -1,0 +1,53 @@
+# ============================================================================
+# Argo Application — istio-base (CRDs + validating webhook). SYNC-WAVE 0:
+# istiod and the gateways depend on these CRDs, so on a from-scratch
+# rebuild the root app-of-apps must create this first.
+# ServerSideApply: Istio's CRDs (VirtualService especially) are another
+# 262KB client-side-annotation breaker — same reasoning as kps.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istio-base
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://istio-release.storage.googleapis.com/charts
+      chart: base
+      targetRevision: 1.30.2
+      helm:
+        releaseName: istio-base          # kps lesson: ALWAYS set explicitly
+        valueFiles:
+          - $values/gitops/platform/istio/istio-base-values.yaml
+    - repoURL: git@github.com:nskgit/k8s-lab-infra.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    # Auto-sync (P8-29): selfHeal on, PRUNE OFF — this app carries CRDs;
+    # a chart refactor must never cascade-delete CRDs (deleting a CRD
+    # deletes every CR of that kind cluster-wide). CRD removal stays a
+    # deliberate manual act.
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+  ignoreDifferences:
+    # Chart renders failurePolicy: Ignore; istiod PATCHES it to Fail at
+    # runtime once it can serve validation (deliberate fail-open bootstrap
+    # → fail-closed steady state). Runtime-managed field, not git drift —
+    # same class as the kps webhook caBundle.
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: istiod-default-validator
+      jqPathExpressions:
+        - '.webhooks[].failurePolicy'

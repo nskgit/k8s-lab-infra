@@ -1,0 +1,73 @@
+# ============================================================================
+# Adminer — app #2 of the blog demo: a web DB client pointed at the SAME
+# MariaDB. Demonstrates two independent apps sharing one database through
+# the Service VIP, each with its own hostname + HTTPRoute.
+#
+# LAB COMPROMISE (named): a DB admin UI on the PUBLIC gateway (login is
+# the DB credentials). Production = internal gateway / VPN only — same
+# reasoning as the Grafana route.
+#
+#   kubectl apply -f gitops/workloads/blog/adminer.yaml
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adminer
+  namespace: apps
+  labels:
+    app: adminer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: adminer
+  template:
+    metadata:
+      labels:
+        app: adminer
+    spec:
+      containers:
+        - name: adminer
+          image: adminer:4   # official, multi-arch; sidecar injected (2/2)
+          ports:
+            - containerPort: 8080
+          env:
+            # Pre-fills the server field on the login page
+            - name: ADMINER_DEFAULT_SERVER
+              value: mariadb.apps.svc.cluster.local
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adminer
+  namespace: apps
+spec:
+  selector:
+    app: adminer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: db-admin
+  namespace: apps
+spec:
+  parentRefs:
+    - name: lab-gateway
+      namespace: istio-system
+  hostnames:
+    - db-admin.satheshkumarnapoleon.site
+  rules:
+    - backendRefs:
+        - name: adminer
+          port: 80

@@ -1,0 +1,35 @@
+# ============================================================================
+# Argo Application — blog (WordPress + MariaDB + Adminer, namespace `apps`).
+#
+# Closes a GitOps coverage gap: the blog stack was kubectl-applied in
+# Phase 6/7. Whole-directory app (all three manifests belong to it).
+#
+# NOTE: the `blog-db-credentials` Secret is IN-CLUSTER ONLY (never in git,
+# by design) — Argo neither manages nor prunes it. On a rebuild that
+# Secret must be recreated by hand/Ansible BEFORE this app syncs, or
+# MariaDB/WordPress pods will hang on missing env refs.
+#
+# MANUAL sync first (no syncPolicy.automated): inspect the diff, sync by
+# hand, then flip to automated+selfHeal+prune with the fleet policy.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: blog
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:nskgit/k8s-lab-infra.git
+    targetRevision: main
+    path: gitops/workloads/blog
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: apps
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false

@@ -1,0 +1,111 @@
+# ============================================================================
+# podinfo — demo app that EXPOSES its own Prometheus metrics, + a PodMonitor
+# so Prometheus scrapes them. Makes concrete the "app-level metrics are
+# opt-in" point: kubelet already sees this pod's CPU/mem, and the existing
+# envoy-stats PodMonitor already scrapes its sidecar — but the APP's own
+# metrics (http_requests_total, request duration histograms) only arrive
+# because of the PodMonitor below.
+#
+# Result: this ONE pod ends up with THREE metric sources in Prometheus:
+#   1. kubelet/cAdvisor  → container CPU/mem (automatic, all containers)
+#   2. envoy-stats PM     → mesh metrics from the istio-proxy :15090
+#   3. podinfo PM (NEW)   → the app's OWN metrics from :9797/metrics
+#
+# In demo ns (istio-injected) so the sidecar contrast is visible (2/2).
+#
+#   kubectl apply -f gitops/workloads/demo/podinfo.yaml
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podinfo
+  namespace: demo
+  labels:
+    app: podinfo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: podinfo
+  template:
+    metadata:
+      labels:
+        app: podinfo
+    spec:
+      containers:
+        - name: podinfo
+          image: ghcr.io/stefanprodan/podinfo:6.7.1   # multi-arch incl arm64
+          command:
+            - ./podinfo
+            - --port=9898             # app HTTP (UI + API)
+            - --port-metrics=9797     # dedicated Prometheus /metrics port
+            - --level=info
+          ports:
+            - name: http
+              containerPort: 9898
+            - name: http-metrics      # ← PodMonitor references this name
+              containerPort: 9797
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 64Mi }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 9898 }
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet: { path: /readyz, port: 9898 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: podinfo
+  namespace: demo
+  labels:
+    app: podinfo
+spec:
+  selector:
+    app: podinfo
+  ports:
+    - name: http
+      port: 80
+      targetPort: 9898
+    - name: http-metrics
+      port: 9797
+      targetPort: 9797
+---
+# Route so we can drive traffic from a browser/curl → generates request
+# metrics we can then see in Prometheus.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: podinfo
+  namespace: demo
+spec:
+  parentRefs:
+    - name: lab-gateway
+      namespace: istio-system
+  hostnames:
+    - podinfo.satheshkumarnapoleon.site
+  rules:
+    - backendRefs:
+        - name: podinfo
+          port: 80
+---
+# THE piece that makes Prometheus scrape the APP's own metrics.
+# kps values already set podMonitorSelectorNilUsesHelmValues:false, so
+# Prometheus picks this up from any namespace with no label gymnastics.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: podinfo
+  namespace: demo
+  labels:
+    release: kps         # harmless; matches the stack's convention
+spec:
+  selector:
+    matchLabels:
+      app: podinfo
+  podMetricsEndpoints:
+    - port: http-metrics    # the named port 9797
+      path: /metrics
+      interval: 30s

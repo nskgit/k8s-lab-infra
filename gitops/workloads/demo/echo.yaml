@@ -1,0 +1,100 @@
+# ============================================================================
+# Phase 6 demo — echo app behind the Gateway API ingress path.
+#
+#   internet → GoDaddy DNS (*.satheshkumarnapoleon.site A-record)
+#            → OCI LB (:80 HTTP-L7, :443 TCP-L4 passthrough)
+#            → worker NodePort 30080/30443
+#            → istio-ingressgateway Envoy (TLS terminates here on 443)
+#            → HTTPRoute (this file) → Service echo → one of 2 pods
+#
+# Teaching points baked in:
+#   * namespace label istio-injection=enabled → every pod gets an Envoy
+#     sidecar at admission (pods show 2/2 READY). Sidecar resources come
+#     from istiod-values.yaml global.proxy (25m/64Mi — THE capacity knob).
+#   * echo responds with request headers as JSON:
+#       - via http://  → x-forwarded-for = YOUR real IP (L7 LB adds it)
+#       - via https:// → x-forwarded-for = worker node IP (L4 passthrough:
+#         the LB never sees plaintext, can't inject headers; kube-proxy
+#         SNAT masks the source). The documented TCP-443 trade-off.
+#
+#   kubectl apply -f gitops/workloads/demo/echo.yaml
+# ============================================================================
+# NOTE: the demo Namespace moved to gitops/platform/namespaces/ (2026-07-15
+# review) — a workload app must never own its namespace: pruning the app
+# would cascade-delete the namespace and everything in it (incl. podinfo,
+# which belongs to a different Application).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: demo
+  labels:
+    app: echo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          # Multi-arch (incl. arm64 for our A1.Flex nodes). Echoes every
+          # request back as JSON: method, path, headers, source ip.
+          image: mendhak/http-https-echo:37
+          ports:
+            - containerPort: 8080
+          env:
+            - name: HTTP_PORT
+              value: "8080"
+          # Capacity discipline (plan D-item: requests 10-25m / limits modest;
+          # memory is the real wall on 8Gi nodes)
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: demo
+spec:
+  selector:
+    app: echo
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo
+  namespace: demo
+spec:
+  # Attach to the shared Gateway in istio-system (its allowedRoutes: All
+  # permits cross-namespace attachment; prod would restrict via Selector).
+  parentRefs:
+    - name: lab-gateway
+      namespace: istio-system
+  # Each hostname binds to whichever listener it intersects — virtual
+  # hosting: ONE Deployment serving two domains through two certs.
+  hostnames:
+    - echo.satheshkumarnapoleon.site
+    - hello.pldisturbme.site       # domain #2 (DNS pending; curl --resolve to test)
+  rules:
+    # S3 canary: weighted split — the progressive-delivery primitive
+    # vanilla Ingress never had. Weights are relative (90+10=100 here for
+    # readability; 9/1 would behave identically). Envoy applies them
+    # per-request as weighted clusters. Manual today; Argo Rollouts /
+    # Flagger automate stepping these numbers against Prometheus SLOs.
+    - backendRefs:
+        - name: echo        # v1 — 90%
+          port: 80
+          weight: 90
+        - name: echo-v2     # canary — 10%
+          port: 80
+          weight: 10

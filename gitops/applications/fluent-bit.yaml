@@ -1,0 +1,37 @@
+# ============================================================================
+# Argo Application — Fluent Bit (per-node log collector DaemonSet).
+# Multi-source: chart fluent-bit@0.57.9 (Fluent Helm repo) + our
+# fluent-bit-values.yaml (CRI parser + cp toleration + Loki output) via
+# ref/$values. Adopt-in-place; expect annotations-only diff.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fluent-bit
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://fluent.github.io/helm-charts
+      chart: fluent-bit
+      targetRevision: 0.57.9
+      helm:
+        releaseName: fluent-bit       # explicit (matches installed release; §11 habit)
+        valueFiles:
+          - $values/gitops/platform/observability/fluent-bit-values.yaml
+    - repoURL: git@github.com:nskgit/k8s-lab-infra.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    # Auto-sync (P8-29): git change deploys itself; live drift reverts in
+    # seconds (selfHeal); resource removed from git is deleted (prune).
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

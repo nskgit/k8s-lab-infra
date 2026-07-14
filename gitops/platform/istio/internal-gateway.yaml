@@ -1,0 +1,27 @@
+# ============================================================================
+# internal-gateway — SECOND Gateway, backed by its own Envoy deployment
+# (istio-internal-gateway release). Multi-gateway pattern: separation by
+# EXPOSURE, not by domain — admin/intranet routes attach here and are
+# unreachable from the internet because no LB forwards to NodePort 31080.
+#
+#   kubectl apply -f gitops/platform/istio/internal-gateway.yaml
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: internal-gateway
+  namespace: istio-system
+spec:
+  gatewayClassName: istio
+  # Manual mode again — program the dedicated Envoy we deployed, don't
+  # auto-provision anything.
+  addresses:
+    - type: Hostname
+      value: istio-internal-gateway.istio-system.svc.cluster.local
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All        # lab; prod would Selector to admin namespaces

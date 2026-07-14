@@ -1,0 +1,39 @@
+# ============================================================================
+# Argo Application — podinfo (first adoption; raw manifests, zero-risk).
+#
+# podinfo is already running (kubectl apply'd in Phase 7). This Application
+# points Argo at the SAME git manifest → identical render → Argo adopts the
+# existing resources, adding only its tracking annotation on first sync.
+# No Helm here — the simplest possible adoption to prove the pattern.
+#
+# History: adopted manually as the Phase 8 first adoption; auto-sync
+# (prune + selfHeal) enabled fleet-wide in P8-29 — this app IS automated.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: podinfo
+  namespace: argocd
+  # Keep the Application object even if the app-of-apps is deleted, until
+  # we intentionally remove it.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:nskgit/k8s-lab-infra.git
+    targetRevision: main
+    path: gitops/workloads/demo
+    directory:
+      include: 'podinfo.yaml'   # adopt ONLY podinfo, not echo/httpbin/etc.
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    # Auto-sync (P8-29): git change deploys itself; live drift reverts in
+    # seconds (selfHeal); resource removed from git is deleted (prune).
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false     # demo ns already exists

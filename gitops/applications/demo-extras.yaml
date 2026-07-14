@@ -1,0 +1,35 @@
+# ============================================================================
+# Argo Application — demo-extras (echo + canary + httpbin + intranet).
+#
+# Closes a GitOps coverage gap: these were kubectl-applied in Phase 6.
+# podinfo deliberately stays in its OWN Application (per-app granularity;
+# it was the Phase 8 first adoption) — the includes here don't overlap.
+#
+# This also makes the canary GitOps-driven (Demo B): the echo HTTPRoute's
+# 90/10 weights now change via git commit → Argo applies → Envoy shifts
+# traffic. The mesh always does the splitting; git now drives the weights.
+#
+# MANUAL sync first (no syncPolicy.automated): inspect the diff, sync by
+# hand, then flip to automated+selfHeal+prune with the fleet policy.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-extras
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:nskgit/k8s-lab-infra.git
+    targetRevision: main
+    path: gitops/workloads/demo
+    directory:
+      include: '{echo.yaml,echo-v2-canary.yaml,httpbin.yaml,intranet.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false

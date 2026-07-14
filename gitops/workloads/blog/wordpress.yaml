@@ -1,0 +1,96 @@
+# ============================================================================
+# WordPress — app #1 of the blog demo. Connects to mariadb.apps.svc:3306
+# (the Service VIP) using credentials from the CLI-created Secret.
+#
+# The two behind-a-proxy lessons (same as Grafana's root_url):
+#   1. WP_HOME/WP_SITEURL pin the public URL so redirects + asset links
+#      point at the domain, not the pod/Service.
+#   2. Envoy terminates TLS and forwards plain HTTP with
+#      X-Forwarded-Proto: https — WORDPRESS_CONFIG_EXTRA teaches PHP to
+#      trust it, else WP thinks it's on http and redirect-loops.
+#
+# Image tag: wordpress:6-apache (official rolling major tag) — after the
+# go-httpbin tag-404 lesson we pin what provably exists; production would
+# pin exact version + digest.
+#
+#   kubectl apply -f gitops/workloads/blog/wordpress.yaml
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  namespace: apps
+  labels:
+    app: wordpress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wordpress
+  template:
+    metadata:
+      labels:
+        app: wordpress
+    spec:
+      containers:
+        - name: wordpress
+          image: wordpress:6-apache   # multi-arch; sidecar IS injected here (2/2)
+          ports:
+            - containerPort: 80
+          env:
+            - name: WORDPRESS_DB_HOST
+              value: mariadb.apps.svc.cluster.local
+            - name: WORDPRESS_DB_NAME
+              value: wordpress
+            - name: WORDPRESS_DB_USER
+              value: wp
+            - name: WORDPRESS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: blog-db-credentials, key: db-password }
+            - name: WORDPRESS_CONFIG_EXTRA
+              value: |
+                if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+                  $_SERVER['HTTPS'] = 'on';
+                }
+                define('WP_HOME', 'https://blog.satheshkumarnapoleon.site');
+                define('WP_SITEURL', 'https://blog.satheshkumarnapoleon.site');
+          readinessProbe:
+            tcpSocket: { port: 80 }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 80 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 25m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+  namespace: apps
+spec:
+  selector:
+    app: wordpress
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: blog
+  namespace: apps
+spec:
+  parentRefs:
+    - name: lab-gateway
+      namespace: istio-system
+  hostnames:
+    - blog.satheshkumarnapoleon.site
+  rules:
+    - backendRefs:
+        - name: wordpress
+          port: 80

@@ -161,10 +161,10 @@
   changed_when: false
   when: not ansible_check_mode
 
-# ── StorageClass oci-bv (from k8s/storage/, single source of truth) ──────
+# ── StorageClass oci-bv (from gitops/platform/storage/, single source of truth) ──────
 - name: Copy oci-bv StorageClass to cp
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../k8s/storage/oci-bv-storageclass.yaml"
+    src: "{{ playbook_dir }}/../gitops/platform/storage/oci-bv-storageclass.yaml"
     dest: /tmp/oci-bv-storageclass.yaml
     owner: root
     group: root

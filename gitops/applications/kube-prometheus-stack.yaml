@@ -1,0 +1,73 @@
+# ============================================================================
+# Argo Application — kube-prometheus-stack (the complex adoption).
+#
+# Multi-source: chart kube-prometheus-stack@87.12.3 (prometheus-community
+# repo) + our kps-values.yaml via ref/$values.
+#
+# THREE special handlings vs a normal adoption:
+#   1. ServerSideApply=true — the stack's CRDs exceed the 262KB
+#      client-side last-applied-configuration ANNOTATION limit; SSA keeps
+#      the 3-way merge server-side, no oversized annotation.
+#   2. ignoreDifferences on the admission-webhook caBundle — the
+#      prometheus-operator injects/rotates it at runtime; it's not git drift.
+#   3. Big diff (Grafana/kube-state-metrics/node-exporter subcharts +
+#      CRDs). Scan for real spec changes amid the tracking-annotation noise.
+#
+# Determinism note: Grafana admin creds come from the pre-created
+# `grafana-admin` Secret (existingSecret in kps-values) — no random
+# password generated at render, so no non-deterministic diff there.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: 87.12.3            # confirm against `helm list` first
+      helm:
+        # CRITICAL for adoption: Argo defaults the Helm release name to the
+        # APPLICATION name (kube-prometheus-stack) — but the live release is
+        # `kps`. Subchart resources (node-exporter/grafana/kube-state-metrics)
+        # derive names from the release name, so without this the render
+        # produces kube-prometheus-stack-* DUPLICATES instead of adopting
+        # kps-*. Caught in the pre-sync diff. Rule: always set releaseName
+        # explicitly on adoptions.
+        releaseName: kps
+        valueFiles:
+          - $values/gitops/platform/observability/kps-values.yaml
+    - repoURL: git@github.com:nskgit/k8s-lab-infra.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    # Auto-sync (P8-29): selfHeal on, PRUNE OFF — this app carries CRDs;
+    # a chart refactor must never cascade-delete CRDs (deleting a CRD
+    # deletes every CR of that kind cluster-wide). CRD removal stays a
+    # deliberate manual act.
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true            # (1) oversized CRDs
+      - CreateNamespace=false
+  ignoreDifferences:
+    # (2) operator-injected webhook CA bundle — runtime-managed, not drift.
+    #     Names assume fullnameOverride: kps → kps-admission. Verify in diff.
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: kps-admission
+      jqPathExpressions:
+        - '.webhooks[].clientConfig.caBundle'
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: kps-admission
+      jqPathExpressions:
+        - '.webhooks[].clientConfig.caBundle'

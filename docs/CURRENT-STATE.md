@@ -28,10 +28,16 @@ Phase 9 (wave-1 apps), or smaller items below.
 
 ## Phase 8 end state (what the next session inherits)
 
-- **Argo fleet 10/10 Synced/Healthy**: platform-root (app-of-apps over
-  `k8s/argocd/apps/`) + 9 children: istio-base, istiod,
+- **Argo fleet = platform-root + 14 children** (app-of-apps over
+  `gitops/applications/`): 9 Phase 8 adoptions (istio-base, istiod,
   istio-ingressgateway, istio-internal-gateway, kube-prometheus-stack,
-  loki, fluent-bit, metrics-server, podinfo.
+  loki, fluent-bit, metrics-server, podinfo) + 5 coverage-gap closers
+  added 2026-07-15 (namespaces, gateways, observability-extras,
+  demo-extras, blog).
+- **2026-07-15 restructure**: `k8s/` renamed to `gitops/` with standard
+  layout (bootstrap/ · applications/ · platform/ · workloads/);
+  exercises moved out to `exercises/`. StorageClass stays Ansible-owned
+  (oci-csi role); Kiali stays the Helm exception.
 - **automated + selfHeal everywhere**; prune TRUE on 7 ordinary apps,
   FALSE on CRD carriers (istio-base, kps) + platform-root (finalizer
   cascade guard). No root/child policy precedence — disjoint object sets.
@@ -46,7 +52,7 @@ Phase 9 (wave-1 apps), or smaller items below.
 - CLI: `ARGOCD_OPTS='--core'` + kube-context ns=argocd (port-forward
   gRPC is flaky); big-app diffs via REST API classifier (LEARNING-LOG §11).
 - Rebuild story: TF → Ansible (installs Argo per D4) → `kubectl apply
-  -f k8s/argocd/root-app.yaml` → platform cascades by sync-wave.
+  -f gitops/bootstrap/root-app.yaml` → platform cascades by sync-wave.
 - **Who-manages-the-root**: root-app.yaml changes need a manual kubectl
   apply (or move it into its own watched dir for self-management).
 
@@ -84,7 +90,7 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 ## Sanity check on arrival
 
 ```bash
-kubectl -n argocd get applications          # 10/10 Synced/Healthy
+kubectl -n argocd get applications          # 15/15 Synced/Healthy
 kubectl get nodes                            # 3 Ready
 for h in echo blog grafana; do curl -s --cacert ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt \
   -o /dev/null -w "$h %{http_code}\n" https://$h.satheshkumarnapoleon.site/; done

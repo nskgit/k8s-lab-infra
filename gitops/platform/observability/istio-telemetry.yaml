@@ -1,0 +1,80 @@
+# ============================================================================
+# Istio → Prometheus wiring (plan §Phase 7 item 4; applied once Istio existed).
+#
+# Stock kube-prometheus-stack scrapes NO Istio metrics. Two objects fix that
+# (canonical shapes from istio samples/addons/extras/prometheus-operator.yaml):
+#
+#   ServiceMonitor → istiod's :15014 http-monitoring port (control-plane
+#                    health: xDS pushes, sidecar sync state, cert issuance)
+#   PodMonitor     → every istio-proxy's :15090 /stats/prometheus (the
+#                    istio_requests_total family — rate/errors/latency per
+#                    hop; what Kiali draws the graph from)
+#
+# Our kps values already set *SelectorNilUsesHelmValues: false, so Prometheus
+# picks these up from istio-system without label gymnastics. All scrapes ride
+# pod-network VXLAN — zero NSG changes.
+#
+#   kubectl apply -f gitops/platform/observability/istio-telemetry.yaml
+# ============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istio-component-monitor
+  namespace: istio-system
+  labels:
+    monitoring: istio-components
+spec:
+  jobLabel: istio
+  targetLabels: [app]
+  selector:
+    matchExpressions:
+      - { key: istio, operator: In, values: [pilot] }
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: http-monitoring   # 15014 on the istiod Service
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: envoy-stats-monitor
+  namespace: istio-system
+  labels:
+    monitoring: istio-proxies
+spec:
+  selector:
+    matchExpressions:
+      - { key: istio-prometheus-ignore, operator: DoesNotExist }
+  namespaceSelector:
+    any: true                 # sidecars live in demo/apps/istio-system
+  jobLabel: envoy-stats
+  podMetricsEndpoints:
+    - path: /stats/prometheus
+      interval: 30s
+      relabelings:
+        # Only the istio-proxy container's merged-stats port
+        - action: keep
+          sourceLabels: [__meta_kubernetes_pod_container_name]
+          regex: "istio-proxy"
+        - action: keep
+          sourceLabels: [__meta_kubernetes_pod_annotationpresent_prometheus_io_scrape]
+        # Rewrite target address to podIP:15090 from the injection annotations
+        - action: replace
+          regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+          replacement: "[$2]:$1"
+          sourceLabels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_ip]
+          targetLabel: __address__
+        - action: replace
+          regex: (\d+);((([0-9]+?)(\.|$)){4})
+          replacement: "$2:$1"
+          sourceLabels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_ip]
+          targetLabel: __address__
+        - action: labeldrop
+          regex: "__meta_kubernetes_pod_label_(.+)"
+        - action: replace
+          sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod_name
