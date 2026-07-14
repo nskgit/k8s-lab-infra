@@ -181,20 +181,20 @@ industry-standard deltas:
   Ansible their nodes — our bigger Ansible layer is the self-managed kubeadm
   difference.
 
-**Coverage demos requested 2026-07-14 (deployment strategies + TF workspaces):**
+**Coverage demos requested 2026-07-14 — PLACED INTO PHASES 2026-07-15** (the demo ladder A→B→C is Phase 9 material: manual rolling → git-driven canary → Rollouts-automated; D is Block 11 pre-work since multi-env automation = the CI matrix):
 
-- **Demo A — GitOps rolling update** (anytime, 10 min): bump podinfo image tag
+- **Demo A [P9-0a] — GitOps rolling update** (runnable anytime, 10 min): bump podinfo image tag
   in git → Argo auto-syncs → watch the ReplicaSet rollover. Teaching point:
   Argo applies intent; the Deployment controller performs the rolling update.
-- **Demo B — GitOps-driven canary** (anytime, ~20 min): adopt echo/echo-v2
-  into Argo (currently hand-applied, outside GitOps), then shift the HTTPRoute
+- **Demo B [P9-0b] — GitOps-driven canary** (runnable anytime, ~20 min; prereq DONE 2026-07-15 — demo-extras adopted echo): echo/echo-v2 already
+  adopted into Argo (done 2026-07-15, demo-extras app); shift the HTTPRoute
   weights 90/10 → 50/50 via git commit. Teaching point: the mesh always does
   the splitting; maturity levels only change WHO edits the weights (human
   kubectl → git commit → Rollouts controller).
-- **Demo C — automated canary** = Argo Rollouts at Phase 9 (adopted above).
+- **Demo C [P9] — automated canary** = Argo Rollouts (adopted above; the top of the A→B→C ladder).
   GitOps wrinkle to remember: Rollouts mutates weights at runtime →
   ignoreDifferences needed (same lesson family as istio failurePolicy, §11).
-- **Demo D — Terraform workspaces** (anytime, zero cost): terraform/workspace-demo
+- **Demo D [B11-0b] — Terraform workspaces** (runnable anytime, zero cost; concept teaching BEFORE the CI matrix makes multi-env real): terraform/workspace-demo
   with a trivial resource on the real OCI backend — workspace new/select/show,
   env:/ state prefixes visible in the bucket, terraform.workspace interpolation,
   wrong-workspace footgun. Then contrast with our dir-per-env pattern
@@ -427,6 +427,13 @@ Design fixes from audit (the memory's original design had 3 conflicts):
    app secrets. **ccm-csi is NOT adopted** (Ansible-owned, D3).
 
 ### Phase 9 — Wave-1 services → CI → dev
+
+> **P9-0 pre-work (added 2026-07-15): the deployment-strategy ladder.**
+> Demo A (GitOps rolling update, podinfo tag bump) → Demo B (git-driven
+> canary, echo weights via commit — prereq done, demo-extras adopted) →
+> then Phase 9 proper adds Demo C (Argo Rollouts = the automated tier),
+> per the 2026-07-14 adoption. A and B are runnable any time on user's go.
+
 
 1. **OCIR pull auth (confirmed hard gap — first Deployment would ImagePullBackOff with 401)**:
    bootstrap TF adds two robot users + auth tokens (OCI caps auth tokens at **2 per user** —

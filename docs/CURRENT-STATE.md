@@ -65,15 +65,16 @@ Phase 9 (wave-1 apps), or smaller items below.
 (metrics + mesh + logs) · Alertmanager on null-receiver (Slack designed,
 needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 
-## Learning queue (user-requested, run on his "go" — do NOT drop from status)
+## Learning queue — now phase-mapped (run on user's "go"; do NOT drop from status)
 
-| # | Item | State | Recorded where |
+| Tag | Item | Phase home | State |
 |---|---|---|---|
-| A | GitOps rolling update demo (podinfo tag bump → watch RS rollover) | ready anytime | exec plan §Block 11 addendum |
-| B | GitOps canary demo (echo weights 90/10→50/50 via git commit) | ready — prereq done 2026-07-15 (demo-extras adopted) | exec plan §Block 11 addendum |
-| C | Automated canary = Argo Rollouts | lands at Phase 9 (adopted) | exec plan §Block 11 addendum |
-| D | Terraform workspaces demo (zero-cost, real backend, env:/ prefixes) then later fully-automated multi-env (CI matrix + DR root) | ready anytime | exec plan §Block 11 addendum |
-| — | Gitops repo split decision (Block 11 step 0) | awaiting user call | Block 11 discussion 2026-07-14 |
+| P9-0a | Demo A — GitOps rolling update (podinfo tag bump) | Phase 9 pre-work | ready anytime |
+| P9-0b | Demo B — git-driven canary (echo 90/10→50/50 via commit) | Phase 9 pre-work | ready — prereq done 2026-07-15 |
+| P9 | Demo C — Argo Rollouts (automated canary; top of the A→B→C ladder) | Phase 9 proper | with Phase 9 |
+| B11-0a | Gitops repo split decision | Block 11 step 0 | awaiting user call |
+| B11-0b | Demo D — TF workspaces (zero-cost, env:/ prefixes) | Block 11 pre-work | ready anytime |
+| B11/12+14 | Fully-automated multi-env (CI matrix per env root; DR = capstone) | Block 11/12 + Phase 14 | follows D |
 
 ## Next options
 
