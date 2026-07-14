@@ -5,6 +5,13 @@ Terraform + (later) Ansible for a self-managed Kubernetes cluster on OCI Always 
 Full master plan and architecture diagrams live in `docs/`. Practical operator quick-reference
 (commands used, gotchas discovered) lives in [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md).
 
+**Dual-purpose repo, declared:** this is a real Terraform+Ansible infra repo AND a learning
+portfolio. `docs/PROJECT-PLAN-v3.md` (locked decisions = ADRs) and the mermaid diagrams are
+what a production repo would keep; the phase journals, `LEARNING-LOG`, `exercises/`, and
+`docs/round1-artifacts/` are the learning trail — a production repo would not carry them
+(e.g. the Round-1 kubeadm configs would simply be deleted: the LIVE config is the Jinja2
+template inside `ansible/roles/kubeadm-cp/templates/`, fed by `group_vars/all.yml`).
+
 ## Prerequisites (one time)
 
 - Terraform 1.11+, OCI CLI, `oci` CLI authenticated (`~/.oci/config`)
