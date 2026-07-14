@@ -181,6 +181,14 @@ industry-standard deltas:
   Ansible their nodes — our bigger Ansible layer is the self-managed kubeadm
   difference.
 
+**B11-0a DECIDED 2026-07-15 (user: "fully approved"): gitops repo SPLIT.**
+`k8s-lab-gitops` = deployment source of truth (bootstrap/applications/
+platform/workloads at root; subtree-split history preserved); infra repo
+keeps Terraform+Ansible+docs; StorageClass moved to oci-csi role files
+(Ansible-owned, D3). New read-only deploy key. Cutover pattern: with TWO
+repos there is NO freeze window — push new repo first, re-point root,
+THEN remove the old tree (contrast with the 8.5 same-repo rename).
+
 **Coverage demos requested 2026-07-14 — PLACED INTO PHASES 2026-07-15** (the demo ladder A→B→C is Phase 9 material: manual rolling → git-driven canary → Rollouts-automated; D is Block 11 pre-work since multi-env automation = the CI matrix):
 
 - **Demo A [P9-0a] — GitOps rolling update** (runnable anytime, 10 min): bump podinfo image tag

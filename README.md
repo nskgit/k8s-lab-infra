@@ -27,11 +27,9 @@ Full master plan and architecture diagrams live in `docs/`. Practical operator q
 - `terraform/dr/` — stub for the future DR region (Phase 14).
 - `ansible/` — OS-to-cluster bootstrap roles (Phase 5a; 8 idempotent roles).
 - `kubeadm/` — `ClusterConfiguration.yaml` (Phase 2).
-- `gitops/` — everything Argo CD reconciles (Phase 8): `bootstrap/`
-  (argocd install values + root-app, the hand/Ansible-applied layer),
-  `applications/` (one Argo Application per component; root-app watches
-  this), `platform/` (namespaces, istio, observability, storage),
-  `workloads/` (demo apps, blog).
+- GitOps content moved to its OWN repo 2026-07-15 (Block 11 step 0):
+  **github.com/nskgit/k8s-lab-gitops** — bootstrap/, applications/,
+  platform/, workloads/. This repo = cloud + cluster substrate only.
 - `exercises/` — standalone practice manifests (not deployed by anything).
 - `.github/workflows/` — CI (Block 11, upcoming).
 

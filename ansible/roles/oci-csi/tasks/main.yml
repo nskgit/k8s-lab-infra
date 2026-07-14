@@ -161,10 +161,10 @@
   changed_when: false
   when: not ansible_check_mode
 
-# ── StorageClass oci-bv (from gitops/platform/storage/, single source of truth) ──────
+# ── StorageClass oci-bv (role-owned file — Ansible/CSI layer per D3) ──────
 - name: Copy oci-bv StorageClass to cp
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../gitops/platform/storage/oci-bv-storageclass.yaml"
+    src: "{{ role_path }}/files/oci-bv-storageclass.yaml"
     dest: /tmp/oci-bv-storageclass.yaml
     owner: root
     group: root
