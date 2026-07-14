@@ -42,14 +42,18 @@ server:
 controller:
   replicas: 1
   resources:
-    requests: { cpu: 100m, memory: 256Mi }
-    limits:   { memory: 512Mi }
+    requests: { cpu: 100m, memory: 384Mi }
+    # 512Mi OOMKilled the controller 13x the moment kube-prometheus-stack
+    # (116 resources, multi-MB CRDs, ~14MB comparison state) was added —
+    # syncs wedged at 0 tasks while the controller crash-looped. Controller
+    # memory scales with the LARGEST app; kps is the classic breaker.
+    limits:   { memory: 1Gi }
 
 repoServer:
   replicas: 1
   resources:
     requests: { cpu: 50m, memory: 128Mi }
-    limits:   { memory: 256Mi }
+    limits:   { memory: 512Mi }   # headroom for rendering the kps chart
 
 redis:
   resources:
