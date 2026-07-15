@@ -7,6 +7,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:                  # one weekly PR for all action bumps, not five
+        patterns: ["*"]
 
   - package-ecosystem: terraform
     directories:
@@ -18,3 +21,11 @@ updates:
       - /terraform/modules/iam-ccm
     schedule:
       interval: weekly
+    groups:
+      oci-provider:             # shared provider = ONE PR across all dirs
+        patterns: ["oracle/*"]  # (a per-dir bump can never pass init alone)
+    ignore:
+      - dependency-name: oracle/oci
+        update-types: ["version-update:semver-major"]
+        # 6.x -> 8.x is a MIGRATION (breaking-change review + plan diff),
+        # scheduled deliberately — not recurring PR noise. Tracked in plan.
