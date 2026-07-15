@@ -57,7 +57,7 @@ jobs:
             terraform -chdir="$root" validate
           done
 
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@v6
 
       - name: Lint (tflint, all directories)
         working-directory: terraform
