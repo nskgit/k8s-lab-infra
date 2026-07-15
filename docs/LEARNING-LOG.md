@@ -799,3 +799,38 @@ catch: user observed desired=50/50 while live=90/10 — the THREE CLOCKS
 of GitOps (push instant · Argo detect+apply window · xDS near-instant);
 that visible gap IS "OutOfSync". Canary ladder tier 2 done; tier 3 =
 Rollouts at Phase 9.
+
+---
+
+## 14. Block 11 — Pipeline 1 (infra CI), part 1 (2026-07-16 evening)
+
+**Built:** infra-ci.yml — 5 secret-free jobs (tf fmt/validate/tflint ·
+Trivy IaC · gitleaks · actionlint · ansible-lint@production+syntax),
+pinned to operator-machine versions; dependabot.yml (actions grouped,
+oracle/* grouped across dirs, oci majors ignored). ansible-lint adopted:
+32 findings → 0 at PRODUCTION profile (real fixes + 2 documented style
+skips); collections declared in requirements.yml; get_url phantom-changed
+stat-guarded; live-cluster --check = changed=0 before every push.
+
+**Gotcha bank (all hit for real):**
+- One red baseline (4 tflint warnings) fails EVERY PR context — all 11
+  dependabot PR runs "failed" for our pre-existing findings. Fix main
+  first; everything downstream heals.
+- tflint: modules must declare required_version (roots aren't enough).
+- Dependabot-triggered runs get a RESTRICTED token by design → gitleaks'
+  PR API call 403s → skip job for actor dependabot[bot]; push-run
+  coverage unchanged.
+- Shared provider = atomic bump: per-dir PRs can never pass init
+  (constraint conflict). groups: across directories; majors = scheduled
+  MIGRATIONS, ignored in config (update-types + versions >= 7, belt+braces
+  after PR #15 raced the config change).
+- .terraform.lock.hcl is the ENFORCEMENT layer: primary refused 8.23
+  ("locked 6.37.0 does not match") — the lock saved the pipeline, not
+  the constraints.
+- Private repo: anonymous GitHub API = 404 → gh auth'd CLI is how the
+  assistant watches runs; also unlocked `gh secret set < file` (values
+  never touch screen/clipboard/history; client-side encrypted).
+- zsh: tilde from command substitution does NOT expand (~/.oci literal).
+- Solo-vs-org identity mapping recorded in chat 2026-07-16: org = SSO
+  federation + Teams + GitHub App + per-env principals + CODEOWNERS +
+  separation of duties; lab = one identity wearing all hats (named).

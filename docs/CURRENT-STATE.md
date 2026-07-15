@@ -87,7 +87,20 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
    cluster, zero human steps (first bot commit: gitops@1d84663; live
    flip fb02ff8→4c9637e observed = Demo A completed via automation).
    HYGIENE: confirm OCIR auth token rotation done (was exposed).
-1. **Block 11 — CI/CD workflows** (the deferred
+1. **Block 11 IN PROGRESS (started 2026-07-16 evening)** — B11-1 ✅:
+   infra-ci.yml 5 jobs GREEN on main (fmt/validate/tflint · Trivy IaC ·
+   gitleaks · actionlint · ansible-lint@production); dependabot live,
+   flood tamed (grouped actions PR #12 merged; oci majors ignored —
+   6->8 = scheduled migration); ansible-lint 32->0 with live changed=0
+   re-verified. CI SECRETS IN PLACE (5): AWS_* state keys,
+   OCI_CONFIG_FILE_CONTENT, OCI_PRIVATE_KEY_PEM, SSH_PRIVATE_KEY.
+   gh CLI authed — assistant can watch private-repo runs.
+   **RESUME AT B11-2**: write the plan job (runner ~/.oci setup with
+   key_file rewrite, backend init + AWS checksum env vars, plan both
+   roots, PR comment + tfplan.bin artifact on main). Then B11-3
+   dispatch-gated apply + nightly drift; B11-4 oracle.oci dynamic
+   inventory (decided) + ansible leg; B11-5 verify stage + docs.
+   Lessons so far: LEARNING-LOG §14. Was: **Block 11** (the deferred
    industry-standard session): PR checks + tf plan/ansible --check on
    PR + gated apply; dynamic inventory; Makefile; cp IP pin D9;
    security gates adopted 2026-07-14: tflint · tfsec · gitleaks · Dependabot
