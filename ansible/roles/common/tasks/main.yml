@@ -74,3 +74,15 @@
     enabled: false
     masked: true
   when: firewalld_unit.stat.exists
+
+# ── dnf-makecache.timer masked (2026-07-16 incident) ───────────────────────
+# The hourly dnf metadata pre-cache ballooned to 3.7GB RSS on the cp and
+# triggered a 25-min OOM storm: the kernel killed besteffort platform pods
+# (oom_score_adj +1000) while protecting dnf (adj 0) — sshd and the
+# apiserver starved; only an OCI power-off recovered the node. Metadata
+# now refreshes only when WE run dnf via Ansible. LEARNING-LOG §12.
+- name: Ensure dnf-makecache.timer is stopped and masked (OOM incident 2026-07-16)
+  ansible.builtin.systemd:
+    name: dnf-makecache.timer
+    state: stopped
+    masked: true

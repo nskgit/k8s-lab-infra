@@ -687,3 +687,41 @@ not coexist on one branch.) Also: `git subtree split -P <dir>` carries a
 directory's history into a standalone repo; Argo repo credentials are
 matched by URL, so a split = new deploy key + new labeled Secret + repoURL
 edits — destination/tracking untouched, so resources never notice.
+
+---
+
+## 12. Incident 2026-07-16 — control-plane OOM storm (dnf makecache)
+
+**Impact:** kubectl/API + SSH to cp dead ~40 min; DATA PLANE UNAFFECTED
+(LB served 200 throughout — control/data plane separation held).
+
+**Debug ladder (the reusable method):** error says 127.0.0.1 → check
+local listener (`lsof -iTCP:6443 -sTCP:LISTEN`) → tunnel process ≠
+listener → hop-by-hop: bastion OK → cp:22 TCP-open-but-NO-banner →
+cp:6443 no TCP while LB serves → OCI says RUNNING (kernel alive,
+userspace dead) → **serial console history** (`oci compute
+console-history capture/get-content` — read the screen of a box you
+can't SSH into) → 25-min OOM storm → parse the task-dump table.
+
+**Root cause:** hourly `dnf-makecache.timer` ballooned to 3.7GB RSS
+(known OL behavior) on the 8GB cp. Kernel OOM-killer selects by
+oom_score_adj, NOT size: besteffort pods (CCM/CSI/typha, adj +1000,
+14-25MB each) were executed serially while dnf (adj 0) was protected —
+"the killer shoots the sacrificeable, not the guilty."
+
+**Recovery:** OCI SOFTRESET → guest too wedged for ACPI graceful
+shutdown (graceful shutdown NEEDS userspace) → OCI 15-min force-off
+fallback → boot → all pods self-healed (restart counts: csi-ctrl 10,
+etcd 3, apiserver 2). Steady-state after: 2.2GB used / 4.6GB avail →
+NO resize needed (leak, not chronic pressure — evidence before money).
+
+**Fixes:** (1) dnf-makecache.timer stopped+MASKED all nodes, codified
+in common role (changed=0 verified). (2) TODO backlog: resource
+requests for CCM/CSI/typha so platform pods stop being the kernel's
+preferred victims (besteffort = adj +1000 = first to die).
+
+**Gotchas collected:** `ssh -N` looks identical healthy/connecting/
+wedged — always verify the LISTENER, and use ExitOnForwardFailure +
+ServerAliveInterval so dead tunnels die loudly. `systemctl is-enabled`
+returns rc=1 for masked units (output "masked" = success). zsh reserves
+`$status` — scripts must not assign it.

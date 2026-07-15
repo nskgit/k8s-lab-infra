@@ -78,7 +78,16 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 
 ## Next options
 
-1. **Block 11 — CI/CD workflows** (top candidate; the deferred
+0. **Phase 9-lite IN PROGRESS (2026-07-16)**: k8s-lab-apps repo LIVE
+   (public, D7) — hello-api pushed (95e7dd9), CI run #1 was executing at
+   session end (check github.com/nskgit/k8s-lab-apps/actions). Manifest
+   staged in gitops workloads/hello-api (00175dd; probes x3, PodMonitor,
+   PSA-ready — NOT deployed, no Application yet). NEXT (stage 2): user
+   creates OCI auth token + 2 GitHub Actions secrets → add push job
+   (buildx arm64, SHA tag, Trivy) → OCIR pull secret in cluster → fill
+   image placeholder → hello-api Application → Argo deploys → Demos A/B
+   against it. Then:
+1. **Block 11 — CI/CD workflows** (the deferred
    industry-standard session): PR checks + tf plan/ansible --check on
    PR + gated apply; dynamic inventory; Makefile; cp IP pin D9;
    security gates adopted 2026-07-14: tflint · tfsec · gitleaks · Dependabot

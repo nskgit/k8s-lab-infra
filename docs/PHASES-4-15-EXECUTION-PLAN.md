@@ -436,6 +436,16 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 
 ### Phase 9 — Wave-1 services → CI → dev
 
+> **SEQUENCE SWAP (user decision 2026-07-16): Phase 9-lite starts BEFORE
+> Block 11** — Pipeline 2 is the gentler CI on-ramp (no cloud creds/state)
+> and completes the code→cluster loop fastest. k8s-lab-apps repo created
+> (PUBLIC per D7 — native arm runners): services/hello-api (FastAPI,
+> /healthz, /metrics, APP_VERSION readout) + stage-1 CI (ruff/pytest/
+> gitleaks/build+smoke, path-filtered). Stage 2 = OCIR push (auth token
+> as Actions secret) + Trivy + gitops tag-bump; then Argo deploys dev.
+> Block 11 (infra CI) follows immediately after.
+
+
 > **P9-0 pre-work (added 2026-07-15): the deployment-strategy ladder.**
 > Demo A (GitOps rolling update, podinfo tag bump) → Demo B (git-driven
 > canary, echo weights via commit — prereq done, demo-extras adopted) →
