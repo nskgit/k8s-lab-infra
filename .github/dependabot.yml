@@ -27,5 +27,7 @@ updates:
     ignore:
       - dependency-name: oracle/oci
         update-types: ["version-update:semver-major"]
+        versions: [">= 7"]      # belt-and-braces: PR #15 slipped through
+                                # update-types alone (config-change race)
         # 6.x -> 8.x is a MIGRATION (breaking-change review + plan diff),
         # scheduled deliberately — not recurring PR noise. Tracked in plan.

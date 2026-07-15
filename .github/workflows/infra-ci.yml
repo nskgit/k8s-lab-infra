@@ -79,6 +79,11 @@ jobs:
           severity: HIGH,CRITICAL
 
   secret-scan:
+    # Dependabot-triggered runs get a restricted GITHUB_TOKEN (GitHub's
+    # defense against malicious dependency PRs) -> gitleaks' PR-commit API
+    # call 403s. Dependabot only changes pins; every merge is still
+    # scanned by the push run, so skipping costs zero coverage.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
