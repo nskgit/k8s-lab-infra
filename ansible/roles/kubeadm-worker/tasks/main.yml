@@ -74,9 +74,10 @@
   ansible.builtin.command: kubeadm join --config=/tmp/JoinConfiguration.yaml
   register: kubeadm_join_output
   when: not kubelet_conf_stat.stat.exists
+  changed_when: true   # stat-guarded: reached only on first join
 
 # ── Wait for this node to reach Ready ────────────────────────────────────
-- name: Wait for {{ inventory_hostname }} to reach Ready
+- name: Wait for node to reach Ready — {{ inventory_hostname }}
   ansible.builtin.command:
     argv:
       - kubectl

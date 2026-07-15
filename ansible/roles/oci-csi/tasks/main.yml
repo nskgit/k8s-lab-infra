@@ -8,10 +8,11 @@
 
 # ── Terraform outputs (defensive; oci-ccm usually set these) ─────────────
 - name: Read Terraform outputs from primary/
-  ansible.builtin.shell: |
-    set -e
-    [ -f ~/.k8s-lab-secrets/state-backend.env ] && . ~/.k8s-lab-secrets/state-backend.env
-    terraform -chdir={{ playbook_dir }}/../terraform/primary output -json
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      [ -f ~/.k8s-lab-secrets/state-backend.env ] && . ~/.k8s-lab-secrets/state-backend.env
+      terraform -chdir={{ playbook_dir }}/../terraform/primary output -json
   delegate_to: localhost
   become: false           # localhost is the operator's Mac — no sudo, no k8s node context
   register: tf_outputs_raw
@@ -258,3 +259,4 @@
       - storageclass.kubernetes.io/is-default-class=true
       - --overwrite
   when: not ansible_check_mode and (localpath_default_annotation.stdout | default('') != 'true')
+  changed_when: true   # guarded on the annotation check above: reached = real change

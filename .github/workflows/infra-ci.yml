@@ -1,0 +1,125 @@
+# ============================================================================
+# Pipeline 1, stage 1 — static checks for the infra repo (Block 11, B11-1).
+#
+# ZERO cloud credentials by design: terraform validate runs with
+# -backend=false, lint/scan tools read files only. The plan job (needs
+# backend + OCI secrets) and the dispatch-gated apply are B11-2/B11-3.
+#
+# Runner: ubuntu-latest (x86) — this repo is PRIVATE (no free ARM), and
+# nothing here builds an architecture-specific artifact. Plans are
+# arch-agnostic; private repos get 2000 free minutes/month.
+# ============================================================================
+name: infra CI
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "ansible/**"
+      - ".github/workflows/infra-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "ansible/**"
+      - ".github/workflows/infra-ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TERRAFORM_VERSION: "1.15.7"     # matches the operator machine
+
+jobs:
+
+  terraform-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Format check (fails on any unformatted file)
+        run: terraform fmt -check -recursive -diff terraform/
+
+      - name: Validate every root (no backend, no credentials)
+        run: |
+          for root in terraform/bootstrap terraform/primary; do
+            echo "=== $root"
+            terraform -chdir="$root" init -backend=false -input=false >/dev/null
+            terraform -chdir="$root" validate
+          done
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: Lint (tflint, all directories)
+        working-directory: terraform
+        run: |
+          tflint --recursive
+
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: IaC misconfig scan (Trivy — tfsec's successor engine)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # gitleaks scans history, not just the tip
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the workflows themselves (actionlint)
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+  ansible-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned ansible toolchain
+        run: pip install ansible-core==2.21.2 ansible-lint==26.6.0
+
+      - name: Install collection dependencies
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Lint (production profile, .ansible-lint config)
+        run: ansible-lint
+
+      - name: Playbook syntax check
+        run: ansible-playbook -i inventory/hosts.ini site.yml --syntax-check

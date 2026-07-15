@@ -40,20 +40,21 @@
     state: present
     reload: true
   loop:
-    - { name: net.bridge.bridge-nf-call-iptables,  value: "1" }
+    - { name: net.bridge.bridge-nf-call-iptables, value: "1" }
     - { name: net.bridge.bridge-nf-call-ip6tables, value: "1" }
-    - { name: net.ipv4.ip_forward,                 value: "1" }
+    - { name: net.ipv4.ip_forward, value: "1" }
 
 # ── Swap off (kubelet refuses to start with swap on) ───────────────────────
 - name: Check if any swap is currently on
   ansible.builtin.command: swapon --noheadings --show
-  register: swap_status
+  register: common_swap_status
   changed_when: false
   check_mode: false
 
 - name: Disable swap for the running session
   ansible.builtin.command: swapoff -a
-  when: swap_status.stdout | length > 0
+  when: common_swap_status.stdout | length > 0
+  changed_when: true   # only reached when swap was actually on
 
 - name: Comment out swap entries in /etc/fstab so swap stays off on reboot
   ansible.builtin.replace:
@@ -65,7 +66,7 @@
 - name: Detect firewalld unit file
   ansible.builtin.stat:
     path: /usr/lib/systemd/system/firewalld.service
-  register: firewalld_unit
+  register: common_firewalld_unit
 
 - name: Ensure firewalld is stopped, disabled, and masked
   ansible.builtin.systemd:
@@ -73,7 +74,7 @@
     state: stopped
     enabled: false
     masked: true
-  when: firewalld_unit.stat.exists
+  when: common_firewalld_unit.stat.exists
 
 # ── dnf-makecache.timer masked (2026-07-16 incident) ───────────────────────
 # The hourly dnf metadata pre-cache ballooned to 3.7GB RSS on the cp and

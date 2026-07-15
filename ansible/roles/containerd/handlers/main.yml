@@ -1,5 +1,5 @@
 ---
-- name: restart containerd
+- name: Restart containerd
   ansible.builtin.systemd:
     name: containerd
     state: restarted

@@ -9,6 +9,14 @@
 # Fetch Docker's official docker-ce.repo — identical to what
 # `dnf config-manager --add-repo` produces. Multi-section file (stable,
 # test, nightly + sources); only stable is enabled by default.
+# Stat-guard (house pattern): get_url without a checksum can't verify
+# remote-vs-local in --check mode and reports a phantom "changed"
+# (ansible-core version-dependent). Fetch only when the file is absent.
+- name: Check for Docker CE yum repo file
+  ansible.builtin.stat:
+    path: /etc/yum.repos.d/docker-ce.repo
+  register: containerd_repo_file
+
 - name: Add Docker CE yum repo
   ansible.builtin.get_url:
     url: https://download.docker.com/linux/centos/docker-ce.repo
@@ -16,6 +24,7 @@
     owner: root
     group: root
     mode: '0644'
+  when: not containerd_repo_file.stat.exists
 
 # ── Install pinned containerd.io ───────────────────────────────────────────
 - name: Install containerd.io (pinned to {{ containerd_version }})
@@ -46,7 +55,7 @@
     owner: root
     group: root
     mode: '0644'
-  notify: restart containerd
+  notify: Restart containerd
 
 # ── Service ────────────────────────────────────────────────────────────────
 - name: Enable + start containerd

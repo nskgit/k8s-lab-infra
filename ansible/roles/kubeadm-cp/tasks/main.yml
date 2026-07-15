@@ -42,6 +42,7 @@
   ansible.builtin.command: kubeadm init --config=/tmp/ClusterConfiguration.yaml
   when: not admin_conf_stat.stat.exists
   register: kubeadm_init_output
+  changed_when: true   # stat-guarded: reached only on first bootstrap
 
 # ── Metrics bind-address remediation (Phase 7) ─────────────────────────
 # kubeadm default binds KCM :10257 / scheduler :10259 to 127.0.0.1 —

@@ -1,0 +1,7 @@
+# Ansible collection dependencies — installed by CI (and on any fresh
+# operator machine) with: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: ansible.posix        # selinux, sysctl
+    version: ">=1.5.0"
+  - name: community.general    # modprobe, dnf_versionlock
+    version: ">=8.0.0"

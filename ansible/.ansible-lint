@@ -1,0 +1,5 @@
+# Lint adopted 2026-07-16 (Block 11). Profile ratchet: basic now,
+profile: production   # passed at adoption 2026-07-16 — hold the line
+skip_list:
+  - yaml[colons]   # aligned-colon formatting is this repo's style
+  - role-name      # kebab-case role names predate the linter; renaming working roles = churn without safety value

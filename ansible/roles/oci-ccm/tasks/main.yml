@@ -9,10 +9,11 @@
 
 # ── Terraform outputs → facts (skipped if passed via --extra-vars in CI)
 - name: Read Terraform outputs from primary/
-  ansible.builtin.shell: |
-    set -e
-    [ -f ~/.k8s-lab-secrets/state-backend.env ] && . ~/.k8s-lab-secrets/state-backend.env
-    terraform -chdir={{ playbook_dir }}/../terraform/primary output -json
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      [ -f ~/.k8s-lab-secrets/state-backend.env ] && . ~/.k8s-lab-secrets/state-backend.env
+      terraform -chdir={{ playbook_dir }}/../terraform/primary output -json
   delegate_to: localhost
   become: false           # localhost is the operator's Mac — no sudo, no k8s node context
   register: tf_outputs_raw

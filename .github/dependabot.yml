@@ -1,0 +1,20 @@
+# Dependabot — supply-chain watcher (adopted 2026-07-14, wired 2026-07-16).
+# Opens PRs when action pins or Terraform providers have updates/CVEs;
+# those PRs flow through infra-ci like any human change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: terraform
+    directories:
+      - /terraform/bootstrap
+      - /terraform/primary
+      - /terraform/modules/network
+      - /terraform/modules/cluster-node
+      - /terraform/modules/lb
+      - /terraform/modules/iam-ccm
+    schedule:
+      interval: weekly
