@@ -781,3 +781,13 @@ terminal/chat 2026-07-16) — tracked in task #39.**
   executes each flag as its own command.
 - Unpinned `pip install tool` in CI = nonreproducible builds; pin
   everything, including the scanner that scans your pins.
+
+**§13 addendum — stage 4 shipped (same evening):** `bump-gitops` job =
+writer-class-2 bot: checkout the OTHER repo (actions/checkout with
+`repository:` + fine-grained PAT), sed the tag, no-op guard, bot
+identity, 3× rebase-retry for push races. First fully-automated deploy:
+apps merge 4c9637e → bot commit gitops@1d84663 → Argo → live flip
+observed fb02ff8→4c9637e, zero human steps. Gotcha: a job that checks
+out a different repo MUST override workflow-level working-directory.
+Demo A thereby completed in its best form (rolling update of one's own
+service, watched from the URL).

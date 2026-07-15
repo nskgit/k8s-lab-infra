@@ -82,8 +82,11 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
    apps CI (5 jobs, 6-run/5-catch journey, LEARNING-LOG §13) → OCIR
    (hello-api:git-sha) → gitops → Argo → hello-api serving at
    hello-api.satheshkumarnapoleon.site (probes, mesh, 4 scrape targets).
-   Fleet 16/16. HYGIENE PENDING: rotate OCIR auth token (exposed —
-   see #39); stage 4 auto-bump (#39) needs PAT/GitHub-App decision.
+   Fleet 16/16. **STAGE 4 LIVE 2026-07-16 evening**: bump-gitops bot
+   (fine-grained PAT) — merge in apps repo → ~6 min later serving on
+   cluster, zero human steps (first bot commit: gitops@1d84663; live
+   flip fb02ff8→4c9637e observed = Demo A completed via automation).
+   HYGIENE: confirm OCIR auth token rotation done (was exposed).
 1. **Block 11 — CI/CD workflows** (the deferred
    industry-standard session): PR checks + tf plan/ansible --check on
    PR + gated apply; dynamic inventory; Makefile; cp IP pin D9;
