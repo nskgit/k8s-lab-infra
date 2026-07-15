@@ -1,6 +1,6 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-07-14 — **PHASE 8 COMPLETE.** The entire platform is
+**Last updated:** 2026-07-16 — **PHASE 9-LITE COMPLETE** (on top of 8/8.5 + repo split). The entire platform is
 GitOps-managed by Argo CD with auto-sync + selfHeal live (drift-undo
 validated). Git push = deployment. **Next: user picks** — Block 11 (CI/CD),
 Phase 9 (wave-1 apps), or smaller items below.
@@ -78,15 +78,12 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 
 ## Next options
 
-0. **Phase 9-lite IN PROGRESS (2026-07-16)**: k8s-lab-apps repo LIVE
-   (public, D7) — hello-api pushed (95e7dd9), CI run #1 was executing at
-   session end (check github.com/nskgit/k8s-lab-apps/actions). Manifest
-   staged in gitops workloads/hello-api (00175dd; probes x3, PodMonitor,
-   PSA-ready — NOT deployed, no Application yet). NEXT (stage 2): user
-   creates OCI auth token + 2 GitHub Actions secrets → add push job
-   (buildx arm64, SHA tag, Trivy) → OCIR pull secret in cluster → fill
-   image placeholder → hello-api Application → Argo deploys → Demos A/B
-   against it. Then:
+0. **Phase 9-lite COMPLETE 2026-07-16** — full code→cluster loop live:
+   apps CI (5 jobs, 6-run/5-catch journey, LEARNING-LOG §13) → OCIR
+   (hello-api:git-sha) → gitops → Argo → hello-api serving at
+   hello-api.satheshkumarnapoleon.site (probes, mesh, 4 scrape targets).
+   Fleet 16/16. HYGIENE PENDING: rotate OCIR auth token (exposed —
+   see #39); stage 4 auto-bump (#39) needs PAT/GitHub-App decision.
 1. **Block 11 — CI/CD workflows** (the deferred
    industry-standard session): PR checks + tf plan/ansible --check on
    PR + gated apply; dynamic inventory; Makefile; cp IP pin D9;
@@ -110,7 +107,7 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 ## Sanity check on arrival
 
 ```bash
-kubectl -n argocd get applications          # 15/15 Synced/Healthy
+kubectl -n argocd get applications          # 16/16 Synced/Healthy
 kubectl get nodes                            # 3 Ready
 for h in echo blog grafana; do curl -s --cacert ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt \
   -o /dev/null -w "$h %{http_code}\n" https://$h.satheshkumarnapoleon.site/; done

@@ -40,8 +40,8 @@ variable "state_bucket_name" {
 # ---- OCIR ----
 variable "ocir_repo_names" {
   type        = list(string)
-  description = "Wave-1 service names — one OCIR repo per service."
-  default     = ["storefront", "catalog", "cart", "orders", "auth"]
+  description = "One OCIR repo per service (wave-1 set + Phase 9-lite hello-api)."
+  default     = ["storefront", "catalog", "cart", "orders", "auth", "hello-api"]
 }
 
 # Note: `ocir_repos_immutable` variable removed — OCI's CreateContainerRepository

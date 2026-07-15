@@ -452,6 +452,17 @@ Design fixes from audit (the memory's original design had 3 conflicts):
 > then Phase 9 proper adds Demo C (Argo Rollouts = the automated tier),
 > per the 2026-07-14 adoption. A and B are runnable any time on user's go.
 
+> **P9-lite STAGES 1–3 COMPLETE 2026-07-16** (commits: apps@fb02ff8,
+> gitops@630f01f). As-built: 5-job workflow (quality/secrets/tests/build/
+> publish — ruff+pip-audit+pytest-cov 100%, gitleaks, buildx+gha cache,
+> provenance labels, Trivy BEFORE push), OCIR hello-api repo via bootstrap
+> TF, pull auth = classic secret (option A; robot-user/cred-provider
+> parked), hello-api live at hello-api.satheshkumarnapoleon.site with
+> probes×3 + PodMonitor (4 targets up) + mesh sidecar, fleet 16/16.
+> Journey: 6 runs, 5 real catches — LEARNING-LOG §13. Stage 4 (CI
+> auto-bump into gitops) = task #39, needs PAT-vs-GitHub-App decision.
+
+
 
 1. **OCIR pull auth (confirmed hard gap — first Deployment would ImagePullBackOff with 401)**:
    bootstrap TF adds two robot users + auth tokens (OCI caps auth tokens at **2 per user** —

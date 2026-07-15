@@ -725,3 +725,59 @@ wedged — always verify the LISTENER, and use ExitOnForwardFailure +
 ServerAliveInterval so dead tunnels die loudly. `systemctl is-enabled`
 returns rc=1 for masked units (output "masked" = success). zsh reserves
 `$status` — scripts must not assign it.
+
+---
+
+## 13. Pipeline 2 (apps CI/CD) — built and shipped 2026-07-16
+
+### The 6-run road to green (every gate fired for a REAL reason once)
+
+| Run | Caught | Lesson |
+|---|---|---|
+| #1 | `pytest` import fails only in CI | bare `pytest` ≠ `python -m pytest` (CWD on sys.path); fix = conftest.py at service root. "Works on my machine" is an ENVIRONMENT claim |
+| review | x86 runners + Trivy AFTER push | amd64 image on ARM cluster = exec format error; scan after push = report, not gate |
+| #3 | pip-audit: 6 real CVEs (starlette ×5, pytest ×1) | bump + re-pin + re-verify. NEVER bypass a scanner |
+| #4 | image reported version "dev" | build-arg missing in ONE of two build sites; the traceability check exists precisely for untraceable artifacts |
+| #5 | publish died at "Set up job" | unresolvable `uses:` ref (trivy-action needs v-prefix). Setup-phase failure = workflow can't init; per-step API diagnoses it anonymously |
+| #6 | nothing — green; image in OCIR | tag = full git SHA; digest sha256:b4baee4c… |
+
+### OCIR mechanics (the answers to "how does docker login work")
+
+- Registry v2 flow: `GET /v2/` → 401 + WWW-Authenticate → basic-auth
+  exchanged for short-lived bearer JWT → blob PUTs + manifest PUT.
+- OCIR username = `<tenancy-ns>/<user>`; password = AUTH TOKEN only
+  (never the account password); **max 2 auth tokens per user**.
+- Push path: runner → public 443. Pull path: kubelet → Service Gateway
+  + imagePullSecret (`kubernetes.io/dockerconfigjson`, in-cluster only).
+- buildx pushes an OCI INDEX: tagged index + untagged children (arch
+  manifest + provenance attestation). Untagged rows are STRUCTURE, not
+  litter — never "clean" them.
+- SHA tags for deploys (immutable, bijective, rollback-exact); semver
+  only for artifacts with consumers who upgrade on their own schedule.
+
+### CI auth to OCI — the honest matrix (2026)
+
+OIDC/WIF: AWS/GCP/Azure yes, **OCI no** (identity domains OIDC = user
+SSO only; OCIR accepts only auth tokens). Vault from hosted runner:
+chicken-and-egg (need a credential to read the vault). Instance
+principal: impossible on GitHub-hosted (no OCI IMDS) — becomes THE
+answer at Phase 12 self-hosted runner; kubelet image credential
+providers (GA, exec plugin + instance principal) retire the PULL secret
+the same way. Best today: robot user, `use repos` in one compartment,
+token in GitHub secrets. **TODO: rotate the current token (exposed in
+terminal/chat 2026-07-16) — tracked in task #39.**
+
+### Workflow-authoring gotchas bank
+
+- Steps share one VM (filesystem + docker daemon persist); explicit
+  values via `$GITHUB_OUTPUT`. Jobs are separate VMs: outputs (strings)
+  · artifacts (files — Block 11's tfplan.bin) · registry (images).
+- `if: always()` on cleanup steps or failures hide the logs you need.
+- `pull_request.branches` filters the TARGET branch — pointing it at a
+  nonexistent branch silently disables all PR checks.
+- `defaults.working-directory` does NOT apply to `uses:` actions.
+- Unquoted `run: echo "x: y"` breaks YAML (colon+space) — use `run: |`.
+- Pasting multiline commands with BLANK lines between continuations
+  executes each flag as its own command.
+- Unpinned `pip install tool` in CI = nonreproducible builds; pin
+  everything, including the scanner that scans your pins.
