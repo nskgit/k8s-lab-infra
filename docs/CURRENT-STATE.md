@@ -69,8 +69,8 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 
 | Tag | Item | Phase home | State |
 |---|---|---|---|
-| P9-0a | Demo A — GitOps rolling update (podinfo tag bump) | Phase 9 pre-work | ready anytime |
-| P9-0b | Demo B — git-driven canary (echo 90/10→50/50 via commit) | Phase 9 pre-work | ready — prereq done 2026-07-15 |
+| P9-0a | Demo A — GitOps rolling update | Phase 9 pre-work | ✅ 2026-07-16 (via stage-4 bot, own service) |
+| P9-0b | Demo B — git-driven canary | Phase 9 pre-work | ✅ 2026-07-16 (90/10→50/50→revert; 15/15 measured; zero pod churn) |
 | P9 | Demo C — Argo Rollouts (automated canary; top of the A→B→C ladder) | Phase 9 proper | with Phase 9 |
 | B11-0a | Gitops repo split | Block 11 step 0 | ✅ DONE 2026-07-16 — Argo now reads nskgit/k8s-lab-gitops |
 | B11-0b | Demo D — TF workspaces (zero-cost, env:/ prefixes) | Block 11 pre-work | ready anytime |

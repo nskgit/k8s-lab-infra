@@ -791,3 +791,11 @@ observed fb02ff8→4c9637e, zero human steps. Gotcha: a job that checks
 out a different repo MUST override workflow-level working-directory.
 Demo A thereby completed in its best form (rolling update of one's own
 service, watched from the URL).
+
+**Demo B (2026-07-16):** canary weights moved by commit alone —
+90/10 → 50/50 (measured 15/15 over 30 req) → revert → back. Zero pod
+churn either direction: traffic-level change, not capacity-level. Bonus
+catch: user observed desired=50/50 while live=90/10 — the THREE CLOCKS
+of GitOps (push instant · Argo detect+apply window · xDS near-instant);
+that visible gap IS "OutOfSync". Canary ladder tier 2 done; tier 3 =
+Rollouts at Phase 9.
