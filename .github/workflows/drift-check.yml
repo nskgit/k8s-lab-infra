@@ -36,30 +36,18 @@ jobs:
           printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
 
-      - name: Write backend.hcl
+      - name: Write backend.hcl (native oci backend — auth reuses ~/.oci/config above)
         run: |
           cat > terraform/primary/backend.hcl <<'EOF'
-          bucket = "k8s-lab-tfstate"
-          key    = "primary/terraform.tfstate"
-          region = "us-ashburn-1"
-          endpoints = {
-            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
-          }
-          use_path_style              = true
-          use_lockfile                = true
-          skip_region_validation      = true
-          skip_credentials_validation = true
-          skip_metadata_api_check     = true
-          skip_requesting_account_id  = true
-          skip_s3_checksum            = true
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
           EOF
 
       - name: terraform plan (read-only — drift, not apply)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         working-directory: terraform/primary
         run: |
           terraform init -backend-config=backend.hcl -input=false
