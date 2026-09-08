@@ -2,6 +2,10 @@ data "oci_identity_availability_domains" "ads" {
   compartment_id = var.tenancy_ocid
 }
 
+# 2026-09-08: comment-only change — first real end-to-end exercise of the
+# infra-cd.yml pipeline (terraform-apply -> ansible-configure -> smoke-test),
+# per LEARNING-LOG §15's plan. Zero resource diff expected.
+
 locals {
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[var.availability_domain_index].name
 }
