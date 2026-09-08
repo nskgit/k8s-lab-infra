@@ -8,6 +8,11 @@
 # automated gate right before the destructive step — see the plan doc
 # (graceful-nibbling-prism.md) for why.
 #
+# Backend auth: native `oci` backend (Terraform >= 1.12, migrated
+# 2026-09-08 from the S3-compatible shim) — reuses the exact same
+# ~/.oci/config profile as the provider. No AWS-shaped credentials
+# anywhere in this file.
+#
 # Stages: terraform-apply -> ansible-configure -> argo-bootstrap (inside
 # the ansible run, see site.yml) -> smoke-test -> rollback-on-failure.
 # ============================================================================
@@ -81,22 +86,15 @@ jobs:
           printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
 
-      - name: Write backend.hcl
+      - name: Write backend.hcl (native oci backend — auth reuses ~/.oci/config above)
         run: |
           cat > terraform/primary/backend.hcl <<'EOF'
-          bucket = "k8s-lab-tfstate"
-          key    = "primary/terraform.tfstate"
-          region = "us-ashburn-1"
-          endpoints = {
-            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
-          }
-          use_path_style              = true
-          use_lockfile                = true
-          skip_region_validation      = true
-          skip_credentials_validation = true
-          skip_metadata_api_check     = true
-          skip_requesting_account_id  = true
-          skip_s3_checksum            = true
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
           EOF
 
       - name: Install conftest
@@ -107,11 +105,6 @@ jobs:
           sudo mv conftest /usr/local/bin/
 
       - name: terraform plan (re-plan at merge — see header)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         working-directory: terraform/primary
         run: |
           terraform init -backend-config=backend.hcl -input=false
@@ -143,20 +136,10 @@ jobs:
 
       - name: terraform apply (the freshly-verified plan above)
         id: apply
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         working-directory: terraform/primary
         run: terraform apply -auto-approve -input=false tfplan
 
       - name: Sync DNS if the bastion/LB public IP changed
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         working-directory: terraform/primary
         run: |
           LB_IP=$(terraform output -raw lb_public_ip)
@@ -182,15 +165,6 @@ jobs:
       (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.ansible == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      # Job-level so every step needing `terraform output` (backend init,
-      # render-inventory.sh) has them — a step-level-only env (the original
-      # bug, found on this job's first real run) doesn't carry to sibling
-      # steps in the same job.
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
     steps:
       - uses: actions/checkout@v7
         with:
@@ -227,19 +201,12 @@ jobs:
         working-directory: k8s-lab-infra/terraform/primary
         run: |
           cat > backend.hcl <<'EOF'
-          bucket = "k8s-lab-tfstate"
-          key    = "primary/terraform.tfstate"
-          region = "us-ashburn-1"
-          endpoints = {
-            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
-          }
-          use_path_style              = true
-          use_lockfile                = true
-          skip_region_validation      = true
-          skip_credentials_validation = true
-          skip_metadata_api_check     = true
-          skip_requesting_account_id  = true
-          skip_s3_checksum            = true
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
           EOF
           terraform init -backend-config=backend.hcl -input=false
 
@@ -290,11 +257,6 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure OCI CLI credentials + backend (to read bastion/cp IPs)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         working-directory: terraform/primary
         run: |
           mkdir -p ~/.oci
@@ -302,28 +264,16 @@ jobs:
           printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
           cat > backend.hcl <<'EOF'
-          bucket = "k8s-lab-tfstate"
-          key    = "primary/terraform.tfstate"
-          region = "us-ashburn-1"
-          endpoints = {
-            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
-          }
-          use_path_style              = true
-          use_lockfile                = true
-          skip_region_validation      = true
-          skip_credentials_validation = true
-          skip_metadata_api_check     = true
-          skip_requesting_account_id  = true
-          skip_s3_checksum            = true
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
           EOF
           terraform init -backend-config=backend.hcl -input=false
 
       - name: Nodes Ready + Argo Applications Healthy (via bastion tunnel)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         run: |
           mkdir -p ~/.ssh
           printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
