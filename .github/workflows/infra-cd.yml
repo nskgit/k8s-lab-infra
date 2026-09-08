@@ -35,8 +35,34 @@ env:
 
 jobs:
 
+  changes:
+    # github.event.head_commit.modified/added only reflects ONE commit —
+    # unreliable for a merge-commit push (proven: PR #15's merge skipped
+    # terraform-apply entirely despite terraform/ files changing, because
+    # the merge commit's own head_commit metadata didn't list them). This
+    # diffs the full push range instead.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      terraform: ${{ steps.filter.outputs.terraform }}
+      ansible: ${{ steps.filter.outputs.ansible }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ github.event.before }}
+          filters: |
+            terraform:
+              - 'terraform/**'
+            ansible:
+              - 'ansible/**'
+
   terraform-apply:
-    if: contains(github.event.head_commit.modified, 'terraform/') || contains(github.event.head_commit.added, 'terraform/')
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -103,6 +129,18 @@ jobs:
             exit 1
           fi
 
+      # Same Trivy gate infra-ci.yml runs at PR time, re-run here as a final
+      # check immediately before the destructive step — consistent with
+      # re-running the policy gate above rather than trusting the PR-time
+      # result still holds.
+      - name: IaC misconfig scan (Trivy) — final gate before apply
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+
       - name: terraform apply (the freshly-verified plan above)
         id: apply
         env:
@@ -137,8 +175,11 @@ jobs:
           fi
 
   ansible-configure:
-    needs: terraform-apply
-    if: always() && (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped')
+    needs: [changes, terraform-apply]
+    if: >
+      always() &&
+      (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped') &&
+      (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.ansible == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -164,7 +205,7 @@ jobs:
         working-directory: k8s-lab-infra/ansible
         run: |
           pip install ansible-core==2.21.2
-          ansible-galaxy collection install -r requirements.yml community.general
+          ansible-galaxy collection install -r requirements.yml   # community.general is already in requirements.yml
 
       - name: Configure OCI CLI credentials
         run: |
