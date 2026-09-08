@@ -66,6 +66,7 @@
 - name: Create/update the Argo repository Secret
   ansible.builtin.shell:
     cmd: >
+      set -o pipefail &&
       kubectl -n argocd create secret generic repo-k8s-lab-gitops
       --from-literal=type=git
       --from-literal=url=git@github.com:nskgit/k8s-lab-gitops.git
@@ -115,6 +116,7 @@
 - name: Create/update the wildcard TLS Secret
   ansible.builtin.shell:
     cmd: >
+      set -o pipefail &&
       kubectl -n istio-system create secret tls istio-ingressgateway-tls-wildcard
       --cert=/tmp/tls-wildcard.crt --key=/tmp/tls-wildcard.key
       --kubeconfig=/etc/kubernetes/admin.conf
@@ -127,6 +129,7 @@
 - name: Create/update the pldisturbme TLS Secret
   ansible.builtin.shell:
     cmd: >
+      set -o pipefail &&
       kubectl -n istio-system create secret tls istio-ingressgateway-tls-pldisturbme
       --cert=/tmp/tls-pldisturbme.crt --key=/tmp/tls-pldisturbme.key
       --kubeconfig=/etc/kubernetes/admin.conf
@@ -150,6 +153,7 @@
 - name: Create/update the grafana-admin Secret
   ansible.builtin.shell:
     cmd: >
+      set -o pipefail &&
       kubectl -n monitoring create secret generic grafana-admin
       --from-literal=admin-user={{ grafana_admin_user }}
       --from-literal=admin-password='{{ lookup("env", "GRAFANA_ADMIN_PASSWORD") }}'
@@ -164,6 +168,7 @@
 - name: Create/update the ocir-pull Secret
   ansible.builtin.shell:
     cmd: >
+      set -o pipefail &&
       kubectl create secret docker-registry ocir-pull
       --docker-server={{ ocir_pull_server }}
       --docker-username='{{ ocir_pull_username }}'
