@@ -834,3 +834,130 @@ stat-guarded; live-cluster --check = changed=0 before every push.
 - Solo-vs-org identity mapping recorded in chat 2026-07-16: org = SSO
   federation + Teams + GitHub App + per-env principals + CODEOWNERS +
   separation of duties; lab = one identity wearing all hats (named).
+
+---
+
+## 15. Incident 2026-09-08 — `terraform apply` silently wiped all 3 boot volumes
+
+**Trigger:** a cosmetic rename (`compartment_name`/`name_prefix`:
+`k8s-lab` → `platform-engine`, part of a planned repo/resource rename).
+Before applying, 4 real ForceNew landmines were found and frozen via
+plan-only review — VCN `dns_label` (immutable, would have replaced the
+whole VCN cascade), the SSH-key metadata trailing label (any `metadata`
+change is ForceNew on `oci_core_instance`), and LB/IAM `name` fields
+(immutable, would have caused a brief outage). Final plan verified
+clean: `0 to add, 22 to change, 0 to destroy`, zero output changes —
+and `apply` still destroyed the entire Kubernetes install on all 3 nodes.
+
+**Impact:** every node's OS wiped back to bare Oracle Linux — no
+kubelet/kubeadm/containerd, `/etc/kubernetes` absent — while the OCI
+instance resources themselves (OCID, `time-created`) were untouched.
+Cloud layer (VCN, LB, reserved IPs, DNS) never touched; public IPs
+unchanged throughout.
+
+**Root cause — found post-recovery, NOT known at apply time:**
+`primary/main.tf` resolves each node's boot image via an *unpinned*
+"latest" data source:
+```hcl
+data "oci_core_images" "ol_arm" {
+  compartment_id           = var.tenancy_ocid
+  operating_system         = "Oracle Linux"
+  operating_system_version = "9"
+  shape                    = var.cp_shape
+  sort_by                  = "TIMECREATED"
+  sort_order               = "DESC"
+}
+# ...
+image_ocid = data.oci_core_images.ol_arm.images[0].id
+```
+Between the original July provisioning and this September apply, Oracle
+published a newer OL9/A1.Flex platform image. The data source
+re-resolves on every plan/apply, so `image_ocid` silently changed →
+`oci_core_instance.source_details.source_id` changed on all 3 nodes.
+That attribute is **not** schema-ForceNew in the OCI provider, so
+Terraform diffed it as an innocuous `~ update in-place` — it never
+carried a `# forces replacement` tag, so it never showed up while
+reviewing the plan for rename-safety (the review was specifically
+scanning for ForceNew/destroy markers). Proof this is unrelated to the
+rename: the identical `source_id` diff was already present in the
+*first* plan pulled, before the frozen-prefix fixes existed — pure time
+-based drift, would have fired on **any** apply run against `primary/`
+old enough to cross an Oracle image-publish boundary, rename or not.
+OCI's actual behavior for a changed `source_details` is to re-provision
+the boot volume from the new image — confirmed via
+`oci bv boot-volume get` showing a `time-created` of the apply's
+timestamp instead of July's, and matching the anomalously long
+"Still modifying... 4-5m" apply time (a real display-name-only update
+is near-instant).
+
+**The meta-lesson:** "no destroy, no forces-replacement in the plan" is
+**not sufficient** proof of safety. A provider can mark a field
+mutable in its schema while the cloud API's real implementation of that
+"update" is destructive. Plan review has to also ask *"could updating
+this field in place still be destructive at the infra level,"* not just
+parse for the destroy/ForceNew symbols Terraform itself chooses to show.
+
+**Fix:** `terraform/modules/cluster-node/main.tf` — added
+`lifecycle { ignore_changes = [source_details] }` on `oci_core_instance`.
+An existing instance's boot image is now frozen at whatever it was
+created with; a deliberate OS upgrade must explicitly taint+recreate the
+instance, never happen as a side effect of an unrelated apply. New
+instances (e.g. adding a worker) still pick up "latest" at creation.
+
+**Recovery (full rebuild, ~few hours):** re-ran `ansible/site.yml`
+end-to-end with `--start-at-task` to jump past two blockers below,
+fresh Argo CD install + `root-app.yaml`, GitOps reconciled 15/16 apps
+automatically. Reconstructed every in-cluster-only secret we had
+material for (TLS wildcard certs, Grafana admin password); blog's
+MariaDB data was genuinely gone (local-path storage on the wiped disk —
+a compromise already named and accepted at design time); `hello-api`'s
+`ocir-pull` imagePullSecret could not be reconstructed — the auth token
+was never stored in git or held in plaintext by the assistant.
+
+**Two real automation gaps this forced a fresh rebuild to expose (both
+fixed in `ansible/site.yml`, see the header comment there):**
+- `cni-calico`'s "wait for Installation Ready" (600s) ran **before**
+  `oci-ccm`, but only CCM clears the
+  `node.cloudprovider.kubernetes.io/uninitialized` taint —
+  `calico-kube-controllers` sat `Pending`/`FailedScheduling` until the
+  wait timed out. Fix: `oci-ccm` now runs before `cni-calico`. CCM's
+  DaemonSet is hostNetwork, so it doesn't need CNI to come up first.
+- `oci-csi`'s "wait for local-path-provisioner Deployment" (300s) ran
+  in the control-plane play, before any worker existed — a plain
+  Deployment has no control-plane toleration, so it had nowhere to
+  schedule. Fix: `oci-csi` moved into its own play, after "Workers
+  join."
+- Gateway API CRDs (`gateway.networking.k8s.io`) were never installed
+  by *any* role — a manual Phase-6 step, predating Argo adoption, that
+  nobody had needed to repeat until this was a genuinely fresh rebuild.
+  Every Argo Application referencing HTTPRoute/Gateway (6 of them)
+  failed `SyncError: failed to discover server resources for group
+  version gateway.networking.k8s.io/v1`. Fixed by a new `gateway-api`
+  role (installs the standard-channel CRDs), added to `site.yml`.
+
+**Gotchas collected:**
+- Argo's cluster-wide API-resource discovery cache does not invalidate
+  from a per-app hard-refresh after installing new CRDs out-of-band —
+  needs `kubectl -n argocd rollout restart statefulset
+  argocd-application-controller` to force a full rebuild.
+- `kubectl patch application --type=json -p='[{"op":"remove","path":
+  "/operation"}]'` errors if `.operation` doesn't exist — don't reapply
+  a historical fix pattern without checking the field is actually
+  there; `argocd app sync <app>` is the safe general-purpose unstick.
+- SSH host-key-changed warnings after an OCI-triggered reboot: verify
+  via an independent out-of-band channel (serial console) before
+  trusting a changed host key — don't reflexively `ssh-keygen -R`.
+- Ansible `--check` mode can produce a spurious failure a few tasks
+  downstream of any `get_url`/file-creation task, because the file
+  never actually lands in check mode — diagnose by checking whether the
+  failing task depends on a file the run never really wrote.
+- `--flag=~/path` does not tilde-expand (only expands at word-start or
+  in a real `VAR=~/path` assignment) — use `$HOME`.
+
+**Not yet closed:** why the OCI provider's `oci_core_instance` schema
+marks `source_details` as non-ForceNew when the underlying API behavior
+for changing it is destructive looks like a provider-level gap (or an
+intentional-but-underdocumented "image swap" feature) — not filed
+upstream yet. `hello-api`'s OCIR pull secret still needs a fresh auth
+token from the operator; the old one was never recoverable by design
+(OCI shows an auth token's value exactly once, at creation).

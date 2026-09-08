@@ -1,9 +1,23 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-07-16 — **PHASE 9-LITE COMPLETE** (on top of 8/8.5 + repo split). The entire platform is
-GitOps-managed by Argo CD with auto-sync + selfHeal live (drift-undo
-validated). Git push = deployment. **Next: user picks** — Block 11 (CI/CD),
-Phase 9 (wave-1 apps), or smaller items below.
+**Last updated:** 2026-09-08 — **INCIDENT + RECOVERY** (LEARNING-LOG §15).
+A rename-triggered `terraform apply` on `primary/` silently wiped all 3
+boot volumes (root cause: unpinned "latest image" data source drift —
+see §15, unrelated to the rename itself). Full Ansible+Argo rebuild
+recovered **15/16** apps Synced/Healthy; only `hello-api` is down,
+waiting on a fresh OCIR auth token from the operator (old one was never
+recoverable — OCI shows it once, at creation). Fixes already made as
+file edits (NOT yet re-tested against the live cluster — pending
+Approve): `cluster-node` module now freezes `source_details` via
+`lifecycle.ignore_changes`; `site.yml` role order fixed (oci-ccm before
+cni-calico; oci-csi moved after workers join); new `gateway-api` role
+closes the last manual-step gap. **The repo/resource rename to
+"platform-engine" is PAUSED** — only the OCI compartment/tf-vars layer
+was touched before the incident; no repo consolidation, no doc rewrite,
+no visibility change yet. **Next: resume Block 11** (CD half — B11-2
+plan job onward) extended to close the gaps above and bring CI to
+`k8s-lab-gitops` (currently zero CI) and round out `k8s-lab-apps`, per
+explicit user ask 2026-09-08 — see "Next options" §1.
 
 **New session opener:**
 > Read `docs/CURRENT-STATE.md` and `docs/PHASES-COMPLETED.md` §Phase 8.
@@ -105,6 +119,29 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
    PR + gated apply; dynamic inventory; Makefile; cp IP pin D9;
    security gates adopted 2026-07-14: tflint · tfsec · gitleaks · Dependabot
    (full bucketing in execution plan §Block 11 addendum).
+   **EXPANDED SCOPE 2026-09-08** (post-incident, explicit user ask —
+   "build CI/CD for all the gaps, automate fully for all repos"):
+   - B11-2's plan job must add a **risky-attribute guard**: grep the
+     plan JSON for non-ForceNew-but-actually-destructive fields
+     (`source_details`, instance `metadata`) and fail/require manual
+     sign-off even when Terraform's own destroy/ForceNew count is zero
+     — directly born from §15 (a "0 destroy" plan still wiped 3 boot
+     volumes).
+   - `ansible/site.yml`'s B11-4 CD leg should run `--check --diff` and
+     assert `changed=0` post-apply as a matter of course — it would
+     have caught the wipe (bare-OS node ≠ changed=0) before anyone
+     needed to notice manually.
+   - `k8s-lab-gitops` has **zero CI today** — needs manifest/kustomize
+     validation, kubeconform/kubeval against installed CRDs (so a
+     Gateway-API-shaped gap like §15 fails CI, not a live sync), and a
+     lint gate, mirroring infra-ci.yml's style.
+   - `k8s-lab-apps` has `hello-api-ci.yml` only — round out to match
+     the "fully automated, no manual steps" bar (audit for other
+     manual gaps the way §15 was found for infra/ansible).
+   - Terraform *apply* itself stays dispatch-gated / human-approved
+     per the project's standing execution rule — "full automation" here
+     means removing manual steps from build/validate/deploy-of-manifests,
+     not removing the human from an infra-destructive `apply`.
 2. **Phase 9 — wave-1 apps**: OCIR robot users, shared chart
    (Deployment/Service/HTTPRoute/DestinationRule/ServiceMonitor
    templates — rules already captured in plan row 7/9), CI → dev.
@@ -123,7 +160,7 @@ needs webhook) · cert lab-CA wildcard expires 2027-07-12.
 ## Sanity check on arrival
 
 ```bash
-kubectl -n argocd get applications          # 16/16 Synced/Healthy
+kubectl -n argocd get applications          # 15/16 Synced/Healthy (hello-api pending OCIR token, §15)
 kubectl get nodes                            # 3 Ready
 for h in echo blog grafana; do curl -s --cacert ~/.k8s-lab-secrets/lab-ca/lab-root-ca.crt \
   -o /dev/null -w "$h %{http_code}\n" https://$h.satheshkumarnapoleon.site/; done
