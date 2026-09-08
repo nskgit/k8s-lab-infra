@@ -20,13 +20,14 @@ on:
       - "terraform/**"
       - "ansible/**"
       - "policy/**"
-      - ".github/workflows/infra-ci.yml"
+      - ".github/workflows/*.yml"
   push:
     branches: [main]
     paths:
       - "terraform/**"
       - "ansible/**"
-      - ".github/workflows/infra-ci.yml"
+      - "policy/**"
+      - ".github/workflows/*.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
