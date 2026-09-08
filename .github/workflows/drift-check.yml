@@ -1,0 +1,75 @@
+# ============================================================================
+# Nightly drift detection — plan-only, never applies. Catches out-of-band
+# changes (console clicks, an OCI-side action) between real merges.
+#
+# No chat/alerting integration exists yet (known limitation, not blocking):
+# a drift finding today only shows up as a failed/annotated workflow run.
+# ============================================================================
+name: infra drift check
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # 03:17 UTC — arbitrary off-peak minute
+  workflow_dispatch: {}
+
+env:
+  TERRAFORM_VERSION: "1.15.7"
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure OCI CLI credentials
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+
+      - name: Write backend.hcl
+        run: |
+          cat > terraform/primary/backend.hcl <<'EOF'
+          bucket = "k8s-lab-tfstate"
+          key    = "primary/terraform.tfstate"
+          region = "us-ashburn-1"
+          endpoints = {
+            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+          }
+          use_path_style              = true
+          use_lockfile                = true
+          skip_region_validation      = true
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_requesting_account_id  = true
+          skip_s3_checksum            = true
+          EOF
+
+      - name: terraform plan (read-only — drift, not apply)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        working-directory: terraform/primary
+        run: |
+          terraform init -backend-config=backend.hcl -input=false
+          set +e
+          terraform plan -no-color -detailed-exitcode -input=false
+          code=$?
+          set -e
+          if [ "${code}" -eq 2 ]; then
+            echo "::warning::Drift detected — real infra no longer matches terraform/primary/. Review the plan output above."
+          elif [ "${code}" -eq 1 ]; then
+            echo "::error::terraform plan itself failed — see output above."
+            exit 1
+          fi
