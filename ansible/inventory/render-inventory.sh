@@ -39,5 +39,11 @@ workers
 [k8s_nodes:vars]
 ansible_user=opc
 ansible_ssh_private_key_file=${SSH_KEY_PATH}
-ansible_ssh_common_args=-o StrictHostKeyChecking=accept-new -o ProxyCommand="ssh -i ${SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -W %h:%p opc@${BASTION_IP}"
+# IdentitiesOnly=yes on BOTH hops is load-bearing in CI, unlike locally:
+# a CI job's SSH agent can carry other keys loaded by earlier steps (e.g.
+# actions/checkout's ssh-key input for a private submodule/sibling repo
+# checkout) — without this, ssh tries those first, and a bastion with a
+# real MaxAuthTries limit closes the connection before ever reaching the
+# explicitly-specified key here.
+ansible_ssh_common_args=-o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ProxyCommand="ssh -i ${SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -W %h:%p opc@${BASTION_IP}"
 EOF
