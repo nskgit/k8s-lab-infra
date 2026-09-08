@@ -219,6 +219,21 @@ jobs:
           printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
           chmod 600 ~/.ssh/k8s_lab_ed25519
 
+      # TEMPORARY DIAGNOSTIC — compares byte count/sha256 of the reconstructed
+      # key against the known-good local file (399 bytes,
+      # 83a0ce5d6d9f2e15e6f0cf6393fbbf63e14956ac077e9a90efed5f2c40c3f154) to
+      # prove/disprove transmission corruption, without ever printing the key
+      # itself. The secret was already re-set once from the same local file
+      # and the failure persisted, so this checks whether the bytes actually
+      # match rather than guessing again.
+      - name: DIAGNOSTIC — checksum the reconstructed SSH key (no key content printed)
+        run: |
+          echo "byte count: $(wc -c < ~/.ssh/k8s_lab_ed25519)"
+          echo "sha256: $(shasum -a 256 ~/.ssh/k8s_lab_ed25519 | cut -d' ' -f1)"
+          echo "expected byte count: 399"
+          echo "expected sha256: 83a0ce5d6d9f2e15e6f0cf6393fbbf63e14956ac077e9a90efed5f2c40c3f154"
+          ssh-keygen -y -f ~/.ssh/k8s_lab_ed25519 2>&1 || true
+
       # TEMPORARY DIAGNOSTIC — two ansible-configure runs have now failed at
       # "Gathering Facts" with "Connection closed by UNKNOWN port 65535" for
       # every host, surviving an IdentitiesOnly=yes fix that should have
