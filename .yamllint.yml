@@ -1,0 +1,28 @@
+# ============================================================================
+# yamllint config — runs alongside ansible-lint (which covers Ansible-
+# specific semantics; this catches raw YAML syntax/style ansible-lint
+# doesn't: duplicate keys, trailing whitespace, tab characters). Same
+# relaxations as the sibling k8s-lab-gitops repo's config, for the same
+# reason: this repo's YAML deliberately aligns colons (group_vars/all.yml's
+# version pins) and .ansible-lint already carries its own skip for that
+# same style (`yaml[colons]`).
+# ============================================================================
+extends: default
+
+rules:
+  line-length: disable
+  document-start: disable
+
+  colons:
+    max-spaces-after: -1
+
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1
+
+  comments:
+    min-spaces-from-content: 1
+
+  truthy:
+    check-keys: false
