@@ -23,6 +23,10 @@ oci_ccm_version:           "v1.33.2"       # ghcr.io/oracle/cloud-provider-oci
 oci_csi_version:           "v1.33.2"       # same image tag
 snapshotter_crds_version:  "v6.3.4"        # kubernetes-csi/external-snapshotter CRD release
 
+# Gateway API — closes the "manual Phase-6 step" gap found 2026-09-08
+# (LEARNING-LOG §15). standard channel only (no experimental features used).
+gateway_api_version:       "v1.2.1"        # kubernetes-sigs/gateway-api release
+
 # Cluster networking — MUST match docs/round1-artifacts/kubeadm/ClusterConfiguration.yaml
 # (the Round-1 manual artifact; the LIVE config is templated by the kubeadm-cp role)
 cluster_name:              "k8s-lab"

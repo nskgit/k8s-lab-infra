@@ -1,6 +1,11 @@
 ---
 # Phase 5 playbook — codifies "cluster exists and is schedulable"
 # (Ansible ownership per D3/D15). Argo bootstrap deferred to Phase 8.
+#
+# Role order fixed post-incident (2026-09-08 rebuild, LEARNING-LOG §15):
+# oci-ccm now runs BEFORE cni-calico, and oci-csi (whose
+# local-path-provisioner wait needs a schedulable node) now runs in its
+# own play AFTER workers join — see the two entries below.
 
 - name: Base OS + runtime + k8s packages (all nodes)
   hosts: k8s_nodes
@@ -16,10 +21,17 @@
   become: true
   gather_facts: true
   roles:
+    # oci-ccm BEFORE cni-calico: CCM's DaemonSet runs hostNetwork (no CNI
+    # needed) and is the only thing that clears the
+    # node.cloudprovider.kubernetes.io/uninitialized taint. Running it
+    # after cni-calico left calico-kube-controllers permanently
+    # Pending/FailedScheduling on that taint, hanging Calico's own
+    # 600s "wait for Installation Ready" — a genuine gap discovered
+    # only because a from-scratch rebuild had never been forced before.
     - kubeadm-cp
-    - cni-calico
     - oci-ccm
-    - oci-csi
+    - cni-calico
+    - gateway-api
 
 - name: Workers join
   hosts: workers
@@ -27,3 +39,14 @@
   gather_facts: true
   roles:
     - kubeadm-worker
+
+- name: Cloud storage (CSI + local-path-provisioner)
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  roles:
+    # Split out of the play above and moved after workers join:
+    # local-path-provisioner is a plain Deployment with no control-plane
+    # toleration, so with zero workers yet it had nowhere to schedule and
+    # its 300s rollout wait always timed out on a fresh rebuild.
+    - oci-csi

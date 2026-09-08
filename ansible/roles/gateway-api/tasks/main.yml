@@ -1,0 +1,56 @@
+---
+# gateway-api — installs the Gateway API CRDs (gateway.networking.k8s.io).
+#
+# Discovered gap (2026-09-08 rebuild, LEARNING-LOG §15): these CRDs were
+# only ever installed manually during Phase 6, predating Argo adoption —
+# no role owned them, so a genuinely fresh rebuild had no path to
+# installing them and every Argo Application referencing HTTPRoute/Gateway
+# failed SyncError until this was done by hand. Codified here to close
+# that gap.
+#
+# Non-destructive on an already-installed cluster: kubectl apply is
+# idempotent; `changed_when` parses stdout to reflect real change status.
+
+- name: Check for existing Gateway API CRDs manifest
+  ansible.builtin.stat:
+    path: /tmp/gateway-api-crds.yaml
+  register: gateway_api_manifest_stat
+
+- name: Download Gateway API CRDs ({{ gateway_api_version }}, standard channel)
+  ansible.builtin.get_url:
+    url: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version }}/standard-install.yaml"
+    dest: /tmp/gateway-api-crds.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  when: not gateway_api_manifest_stat.stat.exists
+
+- name: Apply Gateway API CRDs (server-side; large CRDs)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -f
+      - /tmp/gateway-api-crds.yaml
+  register: gateway_api_apply
+  changed_when: >
+    gateway_api_apply.stdout_lines |
+    select('search', '(created|configured|serverside-applied)$') |
+    list | length > 0
+  when: not ansible_check_mode
+
+- name: Wait for Gateway API CRDs to be Established
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - wait
+      - --for=condition=Established
+      - --timeout=120s
+      - -f
+      - /tmp/gateway-api-crds.yaml
+  changed_when: false
+  when: not ansible_check_mode
