@@ -1,6 +1,9 @@
 ---
-# Phase 5 playbook — codifies "cluster exists and is schedulable"
-# (Ansible ownership per D3/D15). Argo bootstrap deferred to Phase 8.
+# Phase 5 playbook — codifies "cluster exists and is schedulable", plus
+# (as of the Block 11 DR-capstone build) "and the whole platform is
+# serving" via argo-bootstrap below — closing the gap this file's header
+# used to leave open ("Argo bootstrap deferred to Phase 8" was true from
+# Phase 8 onward until now: it was always done by hand, see LEARNING-LOG §15).
 #
 # Role order fixed post-incident (2026-09-08 rebuild, LEARNING-LOG §15):
 # oci-ccm now runs BEFORE cni-calico, and oci-csi (whose
@@ -50,3 +53,14 @@
     # toleration, so with zero workers yet it had nowhere to schedule and
     # its 300s rollout wait always timed out on a fresh rebuild.
     - oci-csi
+
+- name: GitOps bootstrap (Argo CD + bootstrap secrets + root-app)
+  hosts: control_plane
+  become: true
+  gather_facts: false
+  roles:
+    # The actual missing piece the 2026-09-08 incident exposed: every
+    # rebuild from Phase 8 onward did this by hand. See LEARNING-LOG §15
+    # and k8s-lab-gitops/bootstrap/README.md ("D4: the argo-bootstrap
+    # Ansible role owns this on a rebuild").
+    - argo-bootstrap

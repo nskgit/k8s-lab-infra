@@ -1,0 +1,235 @@
+---
+# argo-bootstrap — installs Argo CD and materializes every secret Argo's
+# apps need before they can go Healthy, then applies the app-of-apps root.
+#
+# Closes a gap that existed from Phase 8 onward: this whole sequence was
+# always run by hand (see LEARNING-LOG §15, 2026-09-08 incident recovery).
+# `bootstrap/README.md` in k8s-lab-gitops already named this role as the
+# intended owner ("D4: the argo-bootstrap Ansible role owns this on a
+# rebuild") without it ever having been built until now.
+#
+# Every secret-bearing task below is no_log: true — the values come from
+# CI secrets / environment variables and must never appear in playbook
+# output, whether run locally or in Actions.
+
+# ── Argo CD itself ───────────────────────────────────────────────────────
+- name: Add the argo-helm repo
+  ansible.builtin.command:
+    argv: [helm, repo, add, argo, https://argoproj.github.io/argo-helm]
+  register: helm_repo_add
+  changed_when: "'already exists' not in helm_repo_add.stderr"
+  failed_when: helm_repo_add.rc != 0 and 'already exists' not in helm_repo_add.stderr
+  when: not ansible_check_mode
+
+- name: Update helm repos
+  ansible.builtin.command:
+    argv: [helm, repo, update, argo]
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Install/upgrade Argo CD
+  ansible.builtin.command:
+    argv:
+      - helm
+      - upgrade
+      - --install
+      - argocd
+      - argo/argo-cd
+      - --version
+      - "{{ argocd_helm_version }}"
+      - -n
+      - argocd
+      - --create-namespace
+      - -f
+      - "{{ gitops_repo_path }}/bootstrap/argocd-values.yaml"
+      - --wait
+      - --disable-openapi-validation
+      - --kubeconfig=/etc/kubernetes/admin.conf
+  register: argocd_helm
+  changed_when: >
+    'has been upgraded' in argocd_helm.stdout or 'has been installed' in argocd_helm.stdout
+  when: not ansible_check_mode
+
+# ── Repo credentials — read-only SSH deploy key ──────────────────────────
+# Exact pattern from k8s-lab-gitops/bootstrap/README.md, private key now
+# sourced from CI secret material instead of ~/.k8s-lab-secrets/ (that
+# path is local-only and meaningless to a CI runner).
+- name: Write the Argo repo deploy key to a private temp file
+  ansible.builtin.copy:
+    content: "{{ lookup('env', 'ARGOCD_DEPLOY_SSH_PRIVATE_KEY') }}"
+    dest: /tmp/argocd-gitops-deploy.key
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Create/update the Argo repository Secret
+  ansible.builtin.shell:
+    cmd: >
+      kubectl -n argocd create secret generic repo-k8s-lab-gitops
+      --from-literal=type=git
+      --from-literal=url=git@github.com:nskgit/k8s-lab-gitops.git
+      --from-file=sshPrivateKey=/tmp/argocd-gitops-deploy.key
+      --kubeconfig=/etc/kubernetes/admin.conf
+      --dry-run=client -o yaml | kubectl apply --kubeconfig=/etc/kubernetes/admin.conf -f -
+  register: repo_secret_apply
+  changed_when: "'configured' in repo_secret_apply.stdout or 'created' in repo_secret_apply.stdout"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Label the repository Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - argocd
+      - label
+      - secret
+      - repo-k8s-lab-gitops
+      - argocd.argoproj.io/secret-type=repository
+      - --overwrite
+  changed_when: true
+  when: not ansible_check_mode
+
+- name: Remove the deploy key temp file
+  ansible.builtin.file:
+    path: /tmp/argocd-gitops-deploy.key
+    state: absent
+
+# ── TLS secrets (istio-system) ───────────────────────────────────────────
+- name: Write TLS material to temp files
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - { content: "{{ lookup('env', 'TLS_WILDCARD_CERT_PEM') }}", dest: /tmp/tls-wildcard.crt }
+    - { content: "{{ lookup('env', 'TLS_WILDCARD_KEY_PEM') }}", dest: /tmp/tls-wildcard.key }
+    - { content: "{{ lookup('env', 'TLS_PLDISTURBME_CERT_PEM') }}", dest: /tmp/tls-pldisturbme.crt }
+    - { content: "{{ lookup('env', 'TLS_PLDISTURBME_KEY_PEM') }}", dest: /tmp/tls-pldisturbme.key }
+  no_log: true
+
+- name: Create/update the wildcard TLS Secret
+  ansible.builtin.shell:
+    cmd: >
+      kubectl -n istio-system create secret tls istio-ingressgateway-tls-wildcard
+      --cert=/tmp/tls-wildcard.crt --key=/tmp/tls-wildcard.key
+      --kubeconfig=/etc/kubernetes/admin.conf
+      --dry-run=client -o yaml | kubectl apply --kubeconfig=/etc/kubernetes/admin.conf -f -
+  register: tls_wildcard_apply
+  changed_when: "'configured' in tls_wildcard_apply.stdout or 'created' in tls_wildcard_apply.stdout"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Create/update the pldisturbme TLS Secret
+  ansible.builtin.shell:
+    cmd: >
+      kubectl -n istio-system create secret tls istio-ingressgateway-tls-pldisturbme
+      --cert=/tmp/tls-pldisturbme.crt --key=/tmp/tls-pldisturbme.key
+      --kubeconfig=/etc/kubernetes/admin.conf
+      --dry-run=client -o yaml | kubectl apply --kubeconfig=/etc/kubernetes/admin.conf -f -
+  register: tls_pldisturbme_apply
+  changed_when: "'configured' in tls_pldisturbme_apply.stdout or 'created' in tls_pldisturbme_apply.stdout"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Remove TLS temp files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/tls-wildcard.crt
+    - /tmp/tls-wildcard.key
+    - /tmp/tls-pldisturbme.crt
+    - /tmp/tls-pldisturbme.key
+
+# ── Grafana admin (monitoring) ───────────────────────────────────────────
+- name: Create/update the grafana-admin Secret
+  ansible.builtin.shell:
+    cmd: >
+      kubectl -n monitoring create secret generic grafana-admin
+      --from-literal=admin-user={{ grafana_admin_user }}
+      --from-literal=admin-password='{{ lookup("env", "GRAFANA_ADMIN_PASSWORD") }}'
+      --kubeconfig=/etc/kubernetes/admin.conf
+      --dry-run=client -o yaml | kubectl apply --kubeconfig=/etc/kubernetes/admin.conf -f -
+  register: grafana_secret_apply
+  changed_when: "'configured' in grafana_secret_apply.stdout or 'created' in grafana_secret_apply.stdout"
+  no_log: true
+  when: not ansible_check_mode
+
+# ── OCIR pull secret (demo) ──────────────────────────────────────────────
+- name: Create/update the ocir-pull Secret
+  ansible.builtin.shell:
+    cmd: >
+      kubectl create secret docker-registry ocir-pull
+      --docker-server={{ ocir_pull_server }}
+      --docker-username='{{ ocir_pull_username }}'
+      --docker-password='{{ lookup("env", "OCIR_PULL_TOKEN") }}'
+      -n demo
+      --kubeconfig=/etc/kubernetes/admin.conf
+      --dry-run=client -o yaml | kubectl apply --kubeconfig=/etc/kubernetes/admin.conf -f -
+  register: ocir_secret_apply
+  changed_when: "'configured' in ocir_secret_apply.stdout or 'created' in ocir_secret_apply.stdout"
+  no_log: true
+  when: not ansible_check_mode
+
+# ── blog-db-credentials (apps) — generated once, never rotated silently ──
+# Deliberately NOT the dry-run|apply pattern above: the password must stay
+# stable across idempotent re-runs (rotating it out from under a live
+# WordPress+MariaDB would break the running app), so this checks first
+# and only generates+creates when genuinely absent — e.g. a real rebuild,
+# where the DB itself is gone anyway (local-path storage, not persisted).
+- name: Check for an existing blog-db-credentials Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - apps
+      - get
+      - secret
+      - blog-db-credentials
+  register: blog_secret_check
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Generate + create blog-db-credentials (only if missing)
+  when: blog_secret_check.rc != 0
+  block:
+    - name: Generate random DB passwords
+      ansible.builtin.set_fact:
+        blog_root_password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+        blog_db_password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+      no_log: true
+
+    - name: Create the blog-db-credentials Secret
+      ansible.builtin.shell:
+        cmd: >
+          kubectl -n apps create secret generic blog-db-credentials
+          --from-literal=root-password='{{ blog_root_password }}'
+          --from-literal=db-password='{{ blog_db_password }}'
+          --kubeconfig=/etc/kubernetes/admin.conf
+      register: blog_secret_create
+      changed_when: true
+      no_log: true
+      when: not ansible_check_mode
+
+# ── App-of-apps ───────────────────────────────────────────────────────────
+- name: Apply the platform-root Application
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - "{{ gitops_repo_path }}/bootstrap/root-app.yaml"
+  register: root_app_apply
+  changed_when: >
+    root_app_apply.stdout_lines |
+    select('search', '(created|configured)$') |
+    list | length > 0
+  when: not ansible_check_mode
