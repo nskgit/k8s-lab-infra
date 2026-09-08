@@ -164,7 +164,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install pinned ansible toolchain
-        run: pip install ansible-core==2.21.2 ansible-lint==26.6.0 yamllint==1.37.1
+        # yamllint intentionally unpinned here: ansible-lint==26.6.0 already
+        # requires yamllint>=1.38.0 as its own dependency, so pinning a
+        # separate (older) version here breaks pip's resolver.
+        run: pip install ansible-core==2.21.2 ansible-lint==26.6.0
 
       - name: Install collection dependencies
         run: ansible-galaxy collection install -r requirements.yml
