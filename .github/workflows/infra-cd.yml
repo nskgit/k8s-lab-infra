@@ -51,6 +51,7 @@ jobs:
     outputs:
       terraform: ${{ steps.filter.outputs.terraform }}
       ansible: ${{ steps.filter.outputs.ansible }}
+      workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -64,6 +65,8 @@ jobs:
               - 'terraform/**'
             ansible:
               - 'ansible/**'
+            workflows:
+              - '.github/workflows/infra-cd.yml'
 
   terraform-apply:
     needs: changes
@@ -162,7 +165,7 @@ jobs:
     if: >
       always() &&
       (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped') &&
-      (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.ansible == 'true')
+      (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.ansible == 'true' || needs.changes.outputs.workflows == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -215,6 +218,23 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
           chmod 600 ~/.ssh/k8s_lab_ed25519
+
+      # TEMPORARY DIAGNOSTIC — two ansible-configure runs have now failed at
+      # "Gathering Facts" with "Connection closed by UNKNOWN port 65535" for
+      # every host, surviving an IdentitiesOnly=yes fix that should have
+      # addressed the leading hypothesis (SSH agent pollution from the
+      # k8s-lab-gitops checkout's ssh-key input). This isolates the FIRST
+      # hop only (runner -> bastion, no ProxyCommand) with full -vvv output,
+      # to see the real handshake instead of Ansible's generic error. Remove
+      # once root-caused.
+      - name: DIAGNOSTIC — raw verbose SSH to bastion (first hop only)
+        working-directory: k8s-lab-infra
+        run: |
+          BASTION_IP=$(terraform -chdir=terraform/primary output -raw bastion_public_ip)
+          echo "Bastion IP: ${BASTION_IP}"
+          ssh -vvv -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
+            -o IdentitiesOnly=yes -i ~/.ssh/k8s_lab_ed25519 \
+            "opc@${BASTION_IP}" "echo BASTION_OK; hostname; uptime" 2>&1 || true
 
       - name: Render CI inventory from Terraform outputs
         working-directory: k8s-lab-infra
