@@ -1,0 +1,16 @@
+---
+# Path to the k8s-lab-gitops checkout, relative to this repo's own layout.
+# Locally: ~/workspace/k8s-lab-infra/ansible/../../k8s-lab-gitops resolves
+# to ~/workspace/k8s-lab-gitops (the two repos are checked out as siblings).
+# In CD, the workflow checks out k8s-lab-gitops into that exact same
+# sibling position so this default never needs overriding.
+gitops_repo_path: "{{ playbook_dir }}/../../k8s-lab-gitops"
+
+argocd_helm_version: "7.7.11"   # confirm against `helm list -n argocd` before bumping
+
+# Non-secret identity — the OCIR pull token itself is read from the
+# OCIR_PULL_TOKEN environment variable (never a var default, never logged).
+ocir_pull_server: "iad.ocir.io"
+ocir_pull_username: "idqz7bbbe34a/pldisturbme@gmail.com"
+
+grafana_admin_user: "admin"

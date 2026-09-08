@@ -1,9 +1,8 @@
 # ============================================================================
-# Pipeline 1, stage 1 — static checks for the infra repo (Block 11, B11-1).
-#
-# ZERO cloud credentials by design: terraform validate runs with
-# -backend=false, lint/scan tools read files only. The plan job (needs
-# backend + OCI secrets) and the dispatch-gated apply are B11-2/B11-3.
+# Pipeline 1, stage 1 — static checks + plan-on-PR for the infra repo
+# (Block 11, B11-1/B11-2). The merge-triggered apply/configure/bootstrap
+# CD lives in infra-cd.yml — this file never touches live infrastructure
+# beyond a read-only `terraform plan`.
 #
 # Runner: ubuntu-latest (x86) — this repo is PRIVATE (no free ARM), and
 # nothing here builds an architecture-specific artifact. Plans are
@@ -13,12 +12,14 @@ name: infra CI
 
 permissions:
   contents: read
+  pull-requests: write   # terraform-plan posts/updates a PR comment
 
 on:
   pull_request:
     paths:
       - "terraform/**"
       - "ansible/**"
+      - "policy/**"
       - ".github/workflows/infra-ci.yml"
   push:
     branches: [main]
@@ -33,6 +34,7 @@ concurrency:
 
 env:
   TERRAFORM_VERSION: "1.15.7"     # matches the operator machine
+  CONFTEST_VERSION: "0.56.0"
 
 jobs:
 
@@ -128,3 +130,130 @@ jobs:
 
       - name: Playbook syntax check
         run: ansible-playbook -i inventory/hosts.ini site.yml --syntax-check
+
+  pip-audit:
+    # Vulnerability check on the pinned ansible toolchain — mirrors what
+    # k8s-lab-apps already does for its Python deps; this repo never had it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Audit pinned ansible-core/ansible-lint
+        run: |
+          pip install pip-audit
+          pip-audit --requirement <(echo "ansible-core==2.21.2"; echo "ansible-lint==26.6.0")
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: ShellCheck all tracked shell scripts
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: '.'
+          severity: warning
+
+  terraform-plan:
+    # PR-only: real OCI credentials + backend, read-only `terraform plan`.
+    # Posts the diff as a PR comment, plus a separate, prominent block for
+    # anything policy/risky-attrs.rego flags (LEARNING-LOG §15 — a clean
+    # "0 destroy" plan is not sufficient proof of safety). This job never
+    # applies anything; infra-cd.yml re-plans and re-checks at merge time
+    # rather than reusing this exact artifact (see plan doc for why).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure OCI CLI credentials
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+
+      - name: Write backend.hcl (bucket/endpoint are not secret — only the keys below are)
+        run: |
+          cat > terraform/primary/backend.hcl <<'EOF'
+          bucket = "k8s-lab-tfstate"
+          key    = "primary/terraform.tfstate"
+          region = "us-ashburn-1"
+          endpoints = {
+            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+          }
+          use_path_style              = true
+          use_lockfile                = true
+          skip_region_validation      = true
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_requesting_account_id  = true
+          skip_s3_checksum            = true
+          EOF
+
+      - name: Install conftest
+        run: |
+          curl -sSL -o conftest.tar.gz \
+            "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf conftest.tar.gz conftest
+          sudo mv conftest /usr/local/bin/
+
+      - name: terraform plan (primary — the only root that changes routinely)
+        id: plan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        working-directory: terraform/primary
+        run: |
+          terraform init -backend-config=backend.hcl -input=false
+          terraform plan -no-color -out=tfplan -input=false | tee plan.txt
+          terraform show -json tfplan > plan.json
+          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Policy check (risky non-ForceNew attributes)
+        id: policy
+        working-directory: terraform/primary
+        run: |
+          conftest test --output json -p ../../policy plan.json > conftest.json || true
+          WARN_COUNT=$(jq '[.[].warnings[]?] | length' conftest.json)
+          echo "warn_count=${WARN_COUNT}" >> "$GITHUB_OUTPUT"
+          if [ "${WARN_COUNT}" -gt 0 ]; then
+            {
+              echo "### :rotating_light: Risky-attribute findings (LEARNING-LOG §15)"
+              echo
+              jq -r '[.[].warnings[]?] | .[]' conftest.json | sed 's/^/- /'
+            } > risky-findings.md
+          else
+            echo "No risky-attribute findings." > risky-findings.md
+          fi
+
+      - name: Post/update PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/primary/plan.txt', 'utf8').slice(0, 60000);
+            const risky = fs.readFileSync('terraform/primary/risky-findings.md', 'utf8');
+            const marker = '<!-- infra-ci: terraform-plan -->';
+            const body = `${marker}\n${risky}\n\n<details><summary>terraform plan (primary)</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            }

@@ -1,0 +1,355 @@
+# ============================================================================
+# Pipeline 1, stage 2 — merge-triggered CD (Block 11, B11-3/B11-4/B11-5).
+#
+# The PR-review-then-merge in infra-ci.yml IS the approval gate — this
+# workflow applies immediately on merge to main, no separate manual
+# dispatch. Re-plans and re-runs the risky-attribute policy check at
+# apply time (rather than reusing the PR's plan artifact) as a second,
+# automated gate right before the destructive step — see the plan doc
+# (graceful-nibbling-prism.md) for why.
+#
+# Stages: terraform-apply -> ansible-configure -> argo-bootstrap (inside
+# the ansible run, see site.yml) -> smoke-test -> rollback-on-failure.
+# ============================================================================
+name: infra CD
+
+permissions:
+  contents: write   # rollback job opens a revert PR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "ansible/**"
+      - "policy/**"
+      - ".github/workflows/infra-cd.yml"
+
+concurrency:
+  group: infra-cd-main
+  cancel-in-progress: false   # never cancel a live apply mid-flight
+
+env:
+  TERRAFORM_VERSION: "1.15.7"
+  CONFTEST_VERSION: "0.56.0"
+
+jobs:
+
+  terraform-apply:
+    if: contains(github.event.head_commit.modified, 'terraform/') || contains(github.event.head_commit.added, 'terraform/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      applied: ${{ steps.apply.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure OCI CLI credentials
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+
+      - name: Write backend.hcl
+        run: |
+          cat > terraform/primary/backend.hcl <<'EOF'
+          bucket = "k8s-lab-tfstate"
+          key    = "primary/terraform.tfstate"
+          region = "us-ashburn-1"
+          endpoints = {
+            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+          }
+          use_path_style              = true
+          use_lockfile                = true
+          skip_region_validation      = true
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_requesting_account_id  = true
+          skip_s3_checksum            = true
+          EOF
+
+      - name: Install conftest
+        run: |
+          curl -sSL -o conftest.tar.gz \
+            "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf conftest.tar.gz conftest
+          sudo mv conftest /usr/local/bin/
+
+      - name: terraform plan (re-plan at merge — see header)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        working-directory: terraform/primary
+        run: |
+          terraform init -backend-config=backend.hcl -input=false
+          terraform plan -no-color -out=tfplan -input=false
+          terraform show -json tfplan > plan.json
+
+      - name: Policy gate — HARD FAIL here, unlike the PR-time warn
+        working-directory: terraform/primary
+        run: |
+          conftest test --output json -p ../../policy plan.json > conftest.json || true
+          WARN_COUNT=$(jq '[.[].warnings[]?] | length' conftest.json)
+          if [ "${WARN_COUNT}" -gt 0 ]; then
+            echo "::error::${WARN_COUNT} risky-attribute finding(s) at merge time — something changed between PR review and merge that nobody actually reviewed. Refusing to apply."
+            jq -r '[.[].warnings[]?] | .[]' conftest.json
+            exit 1
+          fi
+
+      - name: terraform apply (the freshly-verified plan above)
+        id: apply
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        working-directory: terraform/primary
+        run: terraform apply -auto-approve -input=false tfplan
+
+      - name: Sync DNS if the bastion/LB public IP changed
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        working-directory: terraform/primary
+        run: |
+          LB_IP=$(terraform output -raw lb_public_ip)
+          echo "Current LB public IP: ${LB_IP}"
+          # Compares against the public DNS zone's current A record and
+          # updates it via `oci dns record rrset update` only on a mismatch.
+          # NOTE: first real run needs the exact zone/domain name confirmed
+          # against the live OCI DNS zone before this is load-bearing —
+          # flagged in the plan doc's verification section, not yet proven.
+          CURRENT_DNS_IP=$(dig +short satheshkumarnapoleon.site @8.8.8.8 | tail -1)
+          if [ "${LB_IP}" != "${CURRENT_DNS_IP}" ]; then
+            echo "::warning::LB IP changed (${CURRENT_DNS_IP} -> ${LB_IP}) — DNS sync needed, see LEARNING-LOG §15 follow-up (D8)."
+            # oci dns record rrset update ... (left as a follow-up: needs the
+            # exact zone OCID + rrset shape confirmed once, then this becomes
+            # a real command instead of a warning).
+          fi
+
+  ansible-configure:
+    needs: terraform-apply
+    if: always() && (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: k8s-lab-infra
+
+      - uses: actions/checkout@v7
+        with:
+          repository: nskgit/k8s-lab-gitops
+          ssh-key: ${{ secrets.ARGOCD_DEPLOY_SSH_PRIVATE_KEY }}
+          path: k8s-lab-gitops
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned ansible toolchain + collections
+        working-directory: k8s-lab-infra/ansible
+        run: |
+          pip install ansible-core==2.21.2
+          ansible-galaxy collection install -r requirements.yml community.general
+
+      - name: Configure OCI CLI credentials
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+
+      - name: Write backend.hcl + init (read-only outputs from here on)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        working-directory: k8s-lab-infra/terraform/primary
+        run: |
+          cat > backend.hcl <<'EOF'
+          bucket = "k8s-lab-tfstate"
+          key    = "primary/terraform.tfstate"
+          region = "us-ashburn-1"
+          endpoints = {
+            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+          }
+          use_path_style              = true
+          use_lockfile                = true
+          skip_region_validation      = true
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_requesting_account_id  = true
+          skip_s3_checksum            = true
+          EOF
+          terraform init -backend-config=backend.hcl -input=false
+
+      - name: Write the node SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
+          chmod 600 ~/.ssh/k8s_lab_ed25519
+
+      - name: Render CI inventory from Terraform outputs
+        working-directory: k8s-lab-infra
+        run: |
+          chmod +x ansible/inventory/render-inventory.sh
+          ./ansible/inventory/render-inventory.sh terraform/primary ~/.ssh/k8s_lab_ed25519 > /tmp/ci-inventory.ini
+
+      - name: Run site.yml (config mgmt + argo-bootstrap)
+        working-directory: k8s-lab-infra/ansible
+        env:
+          ARGOCD_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.ARGOCD_DEPLOY_SSH_PRIVATE_KEY }}
+          TLS_WILDCARD_CERT_PEM: ${{ secrets.TLS_WILDCARD_CERT_PEM }}
+          TLS_WILDCARD_KEY_PEM: ${{ secrets.TLS_WILDCARD_KEY_PEM }}
+          TLS_PLDISTURBME_CERT_PEM: ${{ secrets.TLS_PLDISTURBME_CERT_PEM }}
+          TLS_PLDISTURBME_KEY_PEM: ${{ secrets.TLS_PLDISTURBME_KEY_PEM }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          OCIR_PULL_TOKEN: ${{ secrets.OCIR_PULL_TOKEN }}
+        run: |
+          ansible-playbook site.yml -i /tmp/ci-inventory.ini \
+            -e gitops_repo_path="${GITHUB_WORKSPACE}/k8s-lab-gitops"
+
+  smoke-test:
+    needs: ansible-configure
+    if: needs.ansible-configure.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Public URLs return 2xx/3xx
+        run: |
+          for h in echo blog podinfo db-admin grafana hello-api; do
+            code=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "https://${h}.satheshkumarnapoleon.site/")
+            echo "${h}: ${code}"
+            case "${code}" in 2??|3??) ;; *) echo "::error::${h} returned ${code}"; exit 1 ;; esac
+          done
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure OCI CLI credentials + backend (to read bastion/cp IPs)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        working-directory: terraform/primary
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+          cat > backend.hcl <<'EOF'
+          bucket = "k8s-lab-tfstate"
+          key    = "primary/terraform.tfstate"
+          region = "us-ashburn-1"
+          endpoints = {
+            s3 = "https://idqz7bbbe34a.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+          }
+          use_path_style              = true
+          use_lockfile                = true
+          skip_region_validation      = true
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_requesting_account_id  = true
+          skip_s3_checksum            = true
+          EOF
+          terraform init -backend-config=backend.hcl -input=false
+
+      - name: Nodes Ready + Argo Applications Healthy (via bastion tunnel)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
+          chmod 600 ~/.ssh/k8s_lab_ed25519
+
+          BASTION_IP=$(terraform -chdir=terraform/primary output -raw bastion_public_ip)
+          CP_IP=$(terraform -chdir=terraform/primary output -raw control_plane_private_ip)
+
+          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+            -i ~/.ssh/k8s_lab_ed25519 -f -N -L 6443:127.0.0.1:6443 \
+            -J "opc@${BASTION_IP}" "opc@${CP_IP}"
+          sleep 3
+
+          export KUBECONFIG=/tmp/ci-kubeconfig
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/k8s_lab_ed25519 \
+            -J "opc@${BASTION_IP}" "opc@${CP_IP}" \
+            "sudo cat /etc/kubernetes/admin.conf" \
+            | sed "s#server: https://.*:6443#server: https://127.0.0.1:6443#" \
+            > "${KUBECONFIG}"
+
+          echo "Waiting for all nodes Ready (timeout 300s)..."
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s
+
+          echo "Waiting for all Argo Applications Synced+Healthy (timeout 600s)..."
+          END=$((SECONDS + 600))
+          while [ "${SECONDS}" -lt "${END}" ]; do
+            NOT_READY=$(kubectl -n argocd get applications -o json \
+              | jq -r '.items[] | select(.status.sync.status != "Synced" or .status.health.status != "Healthy") | .metadata.name')
+            if [ -z "${NOT_READY}" ]; then
+              echo "All Argo Applications Synced+Healthy."
+              break
+            fi
+            echo "Still waiting on: ${NOT_READY}"
+            sleep 15
+          done
+          if [ -n "${NOT_READY:-}" ]; then
+            echo "::error::Timed out waiting on: ${NOT_READY}"
+            kubectl -n argocd get applications
+            exit 1
+          fi
+
+  rollback-on-failure:
+    needs: [terraform-apply, ansible-configure, smoke-test]
+    if: failure() && needs.terraform-apply.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Open a revert PR (terraform layer — never auto-merged)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="revert-$(git rev-parse --short HEAD)"
+          git config user.name "infra-cd-bot"
+          git config user.email "actions@github.com"
+          git checkout -b "${BRANCH}"
+          git revert --no-edit HEAD
+          git push origin "${BRANCH}"
+          gh pr create --title "Revert: CD pipeline failed on $(git rev-parse --short HEAD~1)" \
+            --body "infra-cd.yml failed after this commit merged (terraform apply, ansible-configure, or smoke-test — see the failed run for which). Opening this revert for human review rather than auto-merging, per the incident lessons in LEARNING-LOG §15: an unreviewed revert onto a possibly-partially-applied state can compound the problem. Merge this PR to roll forward with the revert." \
+            --base main --head "${BRANCH}"
+
+      - name: Argo app-layer rollback (only if apps went Degraded, infra/ansible otherwise fine)
+        run: |
+          echo "Per-app 'argocd app rollback <app> <previous-revision>' for
+          any app smoke-test found Degraded — left as a follow-up once the
+          smoke-test job above reports structured per-app results instead
+          of a single pass/fail (see plan doc verification section)."

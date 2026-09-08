@@ -4,6 +4,11 @@
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+# primary/terraform.tfvars holds no actual secrets (OCIDs are account
+# identifiers, not credentials; ssh_public_key is public by definition) —
+# committed so CI/CD can plan/apply without a config-file-as-secret
+# workaround. bootstrap/terraform.tfvars stays ignored (manual, rare root).
+!terraform/primary/terraform.tfvars
 override.tf
 override.tf.json
 *_override.tf
