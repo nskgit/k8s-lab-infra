@@ -182,6 +182,15 @@ jobs:
       (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.ansible == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Job-level so every step needing `terraform output` (backend init,
+      # render-inventory.sh) has them — a step-level-only env (the original
+      # bug, found on this job's first real run) doesn't carry to sibling
+      # steps in the same job.
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
     steps:
       - uses: actions/checkout@v7
         with:
@@ -215,11 +224,6 @@ jobs:
           chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
 
       - name: Write backend.hcl + init (read-only outputs from here on)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         working-directory: k8s-lab-infra/terraform/primary
         run: |
           cat > backend.hcl <<'EOF'
