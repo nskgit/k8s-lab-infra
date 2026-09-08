@@ -69,16 +69,60 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload to the Security tab
     steps:
       - uses: actions/checkout@v7
 
-      - name: IaC misconfig scan (Trivy — tfsec's successor engine)
+      - name: IaC misconfig scan (Trivy — tfsec's successor engine; gates the build)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: terraform
           exit-code: "1"
           severity: HIGH,CRITICAL
+
+      - name: IaC misconfig scan, SARIF (Trivy — for the Security tab, doesn't re-gate)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform
+          format: sarif
+          output: trivy.sarif
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-iac
+
+      # Checkov: complementary to Trivy — deeper Terraform-specific coverage
+      # (1000+ policies, cross-resource graph analysis) per 2026 tooling
+      # research. Monitor-only for now (exit-code 0): a brand-new scanner's
+      # first run on an established repo routinely surfaces a pile of
+      # findings that need triage, not an instant hard-fail — promote to
+      # gating once the initial findings are reviewed and either fixed or
+      # explicitly suppressed with a reason.
+      - name: IaC misconfig scan (Checkov — monitor-only until findings are triaged)
+        if: always()
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov.sarif
+          soft_fail: true
+
+      - name: Upload Checkov SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: checkov.sarif
+          category: checkov
 
   secret-scan:
     # Dependabot-triggered runs get a restricted GITHUB_TOKEN (GitHub's
@@ -120,10 +164,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install pinned ansible toolchain
-        run: pip install ansible-core==2.21.2 ansible-lint==26.6.0
+        run: pip install ansible-core==2.21.2 ansible-lint==26.6.0 yamllint==1.37.1
 
       - name: Install collection dependencies
         run: ansible-galaxy collection install -r requirements.yml
+
+      - name: yamllint (raw YAML syntax/style — duplicate keys, trailing whitespace)
+        run: yamllint -c ../.yamllint.yml .
 
       - name: Lint (production profile, .ansible-lint config)
         run: ansible-lint
