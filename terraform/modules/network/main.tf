@@ -10,7 +10,14 @@ resource "oci_core_vcn" "this" {
   compartment_id = var.compartment_ocid
   cidr_blocks    = [var.vcn_cidr]
   display_name   = "${var.name_prefix}-vcn"
-  dns_label      = replace(var.name_prefix, "-", "")
+  # FROZEN independent of name_prefix (2026-09-08 rename incident): dns_label
+  # is immutable on OCI VCNs — changing it forces full VCN replacement,
+  # cascading into every subnet/NSG/instance attached (proven: a plan showed
+  # 58 destroy + 58 create when this was still derived from name_prefix).
+  # It's also purely internal (forms *.k8slab.oraclevcn.com FQDNs used by
+  # the private DNS zones) — never reader-facing, so nothing is lost by
+  # keeping the original value forever.
+  dns_label = var.vcn_dns_label
 }
 
 resource "oci_core_internet_gateway" "this" {

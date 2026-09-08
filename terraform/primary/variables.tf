@@ -22,13 +22,13 @@ variable "compartment_ocid" {
 
 variable "compartment_name" {
   type    = string
-  default = "k8s-lab"
+  default = "platform-engine"
 }
 
 # ---- Naming ----
 variable "name_prefix" {
   type    = string
-  default = "k8s-lab"
+  default = "platform-engine"
 }
 
 # ---- Network ----

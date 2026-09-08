@@ -15,5 +15,11 @@ variable "compartment_name" {
 
 variable "name_prefix" {
   type    = string
-  default = "k8s-lab"
+  default = "platform-engine"
+}
+
+variable "frozen_prefix" {
+  type        = string
+  description = "Prefix for the dynamic-group/policy NAMES only — immutable in OCI (any change forces destroy+recreate, briefly interrupting CCM/CSI instance-principal auth). Deliberately decoupled from name_prefix. Internal identifier, never reader-facing."
+  default     = "k8s-lab"
 }

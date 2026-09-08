@@ -4,7 +4,7 @@ variable "compartment_ocid" {
 
 variable "name_prefix" {
   type    = string
-  default = "k8s-lab"
+  default = "platform-engine"
 }
 
 variable "public_subnet_id" {
@@ -39,4 +39,10 @@ variable "min_bandwidth_mbps" {
 variable "max_bandwidth_mbps" {
   type    = number
   default = 10
+}
+
+variable "frozen_prefix" {
+  type        = string
+  description = "Prefix for backend_set/listener NAMES only — these are immutable in OCI (any change forces destroy+recreate, causing a brief outage). Deliberately decoupled from name_prefix so cosmetic renames never touch them. Internal identifiers, never reader-facing."
+  default     = "k8s-lab"
 }

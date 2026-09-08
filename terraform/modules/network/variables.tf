@@ -5,13 +5,19 @@ variable "compartment_ocid" {
 
 variable "name_prefix" {
   type        = string
-  description = "Prefix applied to resource display names (e.g. 'k8s-lab')."
-  default     = "k8s-lab"
+  description = "Prefix applied to resource display names (e.g. 'platform-engine')."
+  default     = "platform-engine"
 }
 
 variable "vcn_cidr" {
   type    = string
   default = "10.0.0.0/16"
+}
+
+variable "vcn_dns_label" {
+  type        = string
+  description = "VCN DNS label — immutable in OCI once set, so this is deliberately NOT derived from name_prefix (a rename would otherwise force full VCN replacement). Internal-only identifier, never reader-facing."
+  default     = "k8slab"
 }
 
 variable "public_subnet_cidr" {

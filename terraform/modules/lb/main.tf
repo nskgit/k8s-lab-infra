@@ -60,7 +60,7 @@ resource "oci_load_balancer_load_balancer" "this" {
 # ---------------------------------------------------------------------------
 resource "oci_load_balancer_backend_set" "http" {
   load_balancer_id = oci_load_balancer_load_balancer.this.id
-  name             = "${var.name_prefix}-bs-http"
+  name             = "${var.frozen_prefix}-bs-http" # FROZEN — backend_set.name is immutable; renaming would drop+recreate it, causing a brief LB outage while it reconfigures
   policy           = "ROUND_ROBIN"
 
   health_checker {
@@ -100,7 +100,7 @@ resource "oci_load_balancer_backend" "workers" {
 # ---------------------------------------------------------------------------
 resource "oci_load_balancer_listener" "http" {
   load_balancer_id         = oci_load_balancer_load_balancer.this.id
-  name                     = "${var.name_prefix}-listener-http"
+  name                     = "${var.frozen_prefix}-listener-http" # FROZEN — listener.name is immutable, same outage risk as the backend set
   default_backend_set_name = oci_load_balancer_backend_set.http.name
   port                     = 80
   protocol                 = "HTTP"
@@ -121,7 +121,7 @@ resource "oci_load_balancer_listener" "http" {
 # ---------------------------------------------------------------------------
 resource "oci_load_balancer_backend_set" "https" {
   load_balancer_id = oci_load_balancer_load_balancer.this.id
-  name             = "${var.name_prefix}-bs-https"
+  name             = "${var.frozen_prefix}-bs-https" # FROZEN — see http backend set comment above
   policy           = "ROUND_ROBIN"
 
   health_checker {
@@ -154,7 +154,7 @@ resource "oci_load_balancer_backend" "workers_https" {
 # ---------------------------------------------------------------------------
 resource "oci_load_balancer_listener" "https" {
   load_balancer_id         = oci_load_balancer_load_balancer.this.id
-  name                     = "${var.name_prefix}-listener-https"
+  name                     = "${var.frozen_prefix}-listener-https" # FROZEN — see http listener comment above
   default_backend_set_name = oci_load_balancer_backend_set.https.name
   port                     = 443
   protocol                 = "TCP"

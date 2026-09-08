@@ -28,7 +28,7 @@ variable "oci_config_profile" {
 # ---- Compartment ----
 variable "compartment_name" {
   type    = string
-  default = "k8s-lab"
+  default = "platform-engine"
 }
 
 # ---- Remote state ----

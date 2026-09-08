@@ -4,7 +4,7 @@ variable "compartment_ocid" {
 
 variable "name_prefix" {
   type    = string
-  default = "k8s-lab"
+  default = "platform-engine"
 }
 
 variable "role" {

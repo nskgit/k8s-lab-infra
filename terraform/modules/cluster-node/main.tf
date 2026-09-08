@@ -42,6 +42,24 @@ resource "oci_core_instance" "node" {
     role = var.role
     node = each.key
   })
+
+  # FROZEN post-incident (2026-09-08 boot-volume-wipe incident, LEARNING-LOG
+  # §15): source_id above resolves from an unpinned "latest matching image"
+  # data source in primary/main.tf (sort_by=TIMECREATED desc, images[0]).
+  # That value silently drifts whenever Oracle publishes a newer platform
+  # image — with zero relation to anything this module's caller changes.
+  # oci_core_instance.source_details.source_id is NOT schema-ForceNew, so
+  # Terraform shows the drift as an innocuous "update in-place" (no
+  # "forces replacement" tag) — but OCI's real behavior for an image change
+  # is to re-provision the boot volume from the new image, wiping the
+  # running OS. Proven: a "0 destroy" plan still replaced all 3 boot
+  # volumes. ignore_changes freezes the image an existing instance boots
+  # from forever after creation — a deliberate OS upgrade must taint+recreate
+  # the instance explicitly, never happen as a side effect of an unrelated
+  # apply.
+  lifecycle {
+    ignore_changes = [source_details]
+  }
 }
 
 # ---------------------------------------------------------------------------
