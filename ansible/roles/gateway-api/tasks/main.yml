@@ -16,7 +16,7 @@
     path: /tmp/gateway-api-crds.yaml
   register: gateway_api_manifest_stat
 
-- name: Download Gateway API CRDs ({{ gateway_api_version }}, standard channel)
+- name: Download Gateway API CRDs ({{ gateway_api_version }})
   ansible.builtin.get_url:
     url: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version }}/standard-install.yaml"
     dest: /tmp/gateway-api-crds.yaml

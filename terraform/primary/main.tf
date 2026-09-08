@@ -58,7 +58,6 @@ module "iam_ccm" {
   tenancy_ocid     = var.tenancy_ocid
   compartment_ocid = var.compartment_ocid
   compartment_name = var.compartment_name
-  name_prefix      = var.name_prefix
 }
 
 # ---------------------------------------------------------------------------
