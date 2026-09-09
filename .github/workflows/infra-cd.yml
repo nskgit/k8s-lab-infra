@@ -1,20 +1,29 @@
 # ============================================================================
 # Pipeline 1, stage 2 — merge-triggered CD (Block 11, B11-3/B11-4/B11-5).
 #
-# The PR-review-then-merge in infra-ci.yml IS the approval gate — this
-# workflow applies immediately on merge to main, no separate manual
-# dispatch. Re-plans and re-runs the risky-attribute policy check at
-# apply time (rather than reusing the PR's plan artifact) as a second,
-# automated gate right before the destructive step — see the plan doc
-# (graceful-nibbling-prism.md) for why.
+# Two gates, deliberately separate (2026-09-09):
+#   1. merge  — branch protection on main: required checks + PR. The
+#      review is the change approval.
+#   2. deploy — the `approve` job targets the `production` environment,
+#      whose required reviewer must approve in the Actions UI before
+#      anything mutates. Merge = "code accepted"; approval = "deploy now".
+#
+# What gets applied is the plan the reviewer saw: infra-ci.yml uploads the
+# PR-time plan (encrypted) and terraform-apply downloads and applies that
+# exact file. Terraform refuses a saved plan whose state has moved ("Saved
+# plan is stale"), so review-to-merge drift fails closed. Only when no
+# reviewed plan exists for the merged commit (Dependabot PR, expired
+# artifact, force_replan dispatch) does it re-plan — and then the
+# risky-attribute policy check is a hard fail, not the PR-time warn.
 #
 # Backend auth: native `oci` backend (Terraform >= 1.12, migrated
 # 2026-09-08 from the S3-compatible shim) — reuses the exact same
 # ~/.oci/config profile as the provider. No AWS-shaped credentials
 # anywhere in this file.
 #
-# Stages: terraform-apply -> ansible-configure -> argo-bootstrap (inside
-# the ansible run, see site.yml) -> smoke-test -> rollback-on-failure.
+# Stages: changes -> approve -> terraform-apply -> ansible-configure ->
+# argo-bootstrap (inside the ansible run, see site.yml) -> smoke-test ->
+# rollback-on-failure.
 # ============================================================================
 name: infra CD
 
@@ -29,6 +38,12 @@ on:
       - "ansible/**"
       - "policy/**"
       - ".github/workflows/infra-cd.yml"
+  workflow_dispatch:
+    inputs:
+      force_replan:
+        description: "Ignore the PR-time plan and re-plan at apply time (use after a 'Saved plan is stale' failure)"
+        type: boolean
+        default: false
 
 concurrency:
   group: infra-cd-main
@@ -49,14 +64,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      terraform: ${{ steps.filter.outputs.terraform }}
-      ansible: ${{ steps.filter.outputs.ansible }}
-      workflows: ${{ steps.filter.outputs.workflows }}
+      # A manual dispatch has no push range to diff — treat it as "everything".
+      terraform: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.terraform == 'true' }}
+      ansible: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.ansible == 'true' }}
+      workflows: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v3
+        if: github.event_name == 'push'
         id: filter
         with:
           base: ${{ github.event.before }}
@@ -68,15 +85,34 @@ jobs:
             workflows:
               - '.github/workflows/infra-cd.yml'
 
-  terraform-apply:
+  approve:
+    # The deploy gate. `production` carries a required reviewer (repo
+    # setting — see README.md); this job pauses the run until they approve
+    # in the Actions UI. One no-op job holds the environment so a run asks
+    # for ONE approval, and every mutating job below `needs` it.
     needs: changes
+    if: needs.changes.outputs.terraform == 'true' || needs.changes.outputs.ansible == 'true' || needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - run: echo "Approved for production by the environment's required reviewer."
+
+  terraform-apply:
+    needs: [changes, approve]
     if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read        # download the PR-time plan artifact from the CI run
+      pull-requests: read  # merged commit -> PR lookup
     outputs:
       applied: ${{ steps.apply.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # tree-hash comparison against the PR head
 
       - uses: hashicorp/setup-terraform@v4
         with:
@@ -107,7 +143,57 @@ jobs:
           tar -xzf conftest.tar.gz conftest
           sudo mv conftest /usr/local/bin/
 
-      - name: terraform plan (re-plan at merge — see header)
+      - name: Locate the reviewed plan (the PR-time artifact for this merge)
+        id: locate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          replan() { echo "::warning::$1 — falling back to re-plan (hard policy gate)."; echo "mode=replan" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          [ "${{ inputs.force_replan }}" = "true" ] && replan "force_replan requested"
+
+          # Squash-merge commit -> the PR it came from -> that PR's head SHA.
+          PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0] // empty')
+          [ -n "${PR_JSON}" ] || replan "no merged PR is associated with ${GITHUB_SHA} (direct push?)"
+          PR_NUM=$(jq -r .number <<<"${PR_JSON}")
+          HEAD_SHA=$(jq -r .head.sha <<<"${PR_JSON}")
+          HEAD_REPO=$(jq -r .head.repo.full_name <<<"${PR_JSON}")
+          echo "Merged from PR #${PR_NUM}, head ${HEAD_SHA} (${HEAD_REPO})"
+          [ "${HEAD_REPO}" = "${GITHUB_REPOSITORY}" ] || replan "PR head is from a fork; its plan job ran without secrets"
+
+          # A plan is only valid for the tree it was computed from. Branch
+          # protection's "require up to date" makes the squash commit's tree
+          # equal the PR head's tree — verify instead of assuming.
+          git fetch -q origin "refs/pull/${PR_NUM}/head"
+          [ "$(git rev-parse "${GITHUB_SHA}^{tree}")" = "$(git rev-parse "${HEAD_SHA}^{tree}")" ] \
+            || replan "merged tree differs from PR head tree — the reviewed plan does not describe this commit"
+
+          RUN_ID=$(gh run list --workflow "infra CI" --event pull_request --commit "${HEAD_SHA}" \
+            --status success --json databaseId --jq '.[0].databaseId // empty')
+          [ -n "${RUN_ID}" ] || replan "no successful PR-time CI run found for ${HEAD_SHA}"
+          gh run download "${RUN_ID}" -n "tfplan-${HEAD_SHA}" -D terraform/primary \
+            || replan "artifact tfplan-${HEAD_SHA} not on run ${RUN_ID} (expired, or the plan job was skipped — e.g. Dependabot)"
+
+          echo "Reusing the plan reviewed on PR #${PR_NUM} (CI run ${RUN_ID})."
+          echo "mode=reuse" >> "$GITHUB_OUTPUT"
+
+      - name: Decrypt + load the reviewed plan
+        if: steps.locate.outputs.mode == 'reuse'
+        working-directory: terraform/primary
+        env:
+          TFPLAN_PASSPHRASE: ${{ secrets.TFPLAN_PASSPHRASE }}
+        run: |
+          gpg --batch --yes --decrypt --pinentry-mode loopback --passphrase-fd 0 \
+            -o tfplan.tar.gz tfplan.tar.gz.gpg <<<"${TFPLAN_PASSPHRASE}"
+          tar -xzf tfplan.tar.gz tfplan plan.json
+          rm -f tfplan.tar.gz tfplan.tar.gz.gpg
+          terraform init -backend-config=backend.hcl -input=false
+          terraform show -no-color tfplan | tail -n 3
+
+      - name: terraform plan (fallback — no reusable reviewed plan, see step above)
+        if: steps.locate.outputs.mode == 'replan'
         working-directory: terraform/primary
         env:
           # Day-1 sourcing for the edge module's gateway cert — see the
@@ -142,7 +228,11 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
 
-      - name: terraform apply (the freshly-verified plan above)
+      # A reused plan is checked against live state here: Terraform errors
+      # with "Saved plan is stale" if the state serial moved since review
+      # (a manual apply, a previous CD run). Recovery: look at what moved,
+      # then a manual dispatch with force_replan=true.
+      - name: terraform apply (the reviewed plan, or the gated re-plan)
         id: apply
         working-directory: terraform/primary
         run: terraform apply -auto-approve -input=false tfplan
@@ -166,9 +256,10 @@ jobs:
           fi
 
   ansible-configure:
-    needs: [changes, terraform-apply]
+    needs: [changes, approve, terraform-apply]
     if: >
       always() &&
+      needs.approve.result == 'success' &&
       (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped') &&
       (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.ansible == 'true' || needs.changes.outputs.workflows == 'true')
     runs-on: ubuntu-latest
