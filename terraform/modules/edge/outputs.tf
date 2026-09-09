@@ -8,7 +8,7 @@ output "gateway_id" {
 }
 
 output "origin_fqdn" {
-  value       = "origin.${var.domain}"
+  value       = oci_dns_rrset.origin.domain
   description = "The stable FQDN both the API Gateway backend and the steering policy's secondary answer point at."
 }
 

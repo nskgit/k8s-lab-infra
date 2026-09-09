@@ -75,8 +75,12 @@ variable "dns_zone_id" {
 }
 
 variable "edge_hostnames" {
-  type        = list(string)
-  default     = ["blog", "db-admin", "echo", "grafana", "hello-api", "httpbin", "intranet", "podinfo"]
+  type = list(string)
+  # "intranet" deliberately excluded: it's isolated on a separate internal
+  # gateway with no LB listener at all (public -> 404 by design). Steering
+  # a public DNS name at it here would just advertise a path that always
+  # fails, with no way for the shared health check to catch it per-hostname.
+  default     = ["blog", "db-admin", "echo", "grafana", "hello-api", "httpbin", "podinfo"]
   description = "Second-level labels that get DNS steering (each must have a matching Istio HTTPRoute already)."
 }
 

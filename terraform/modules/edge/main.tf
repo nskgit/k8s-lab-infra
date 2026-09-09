@@ -1,12 +1,17 @@
 # ============================================================================
 # edge — public DNS steering -> API Gateway -> LB -> Istio (2026-09-09).
 #
-# Request path this module builds:
+# Built to a specific request: front the LB with DNS steering + an API
+# Gateway instead of pointing DNS straight at it, with the OLD direct-to-LB
+# path kept as the steering failover/"dummy" answer. This module is that
+# architecture, not a fix for a smaller problem — see below for the one
+# piece of it that happens to double as a real bug fix.
+#
+# Request path:
 #   client -> DNS steering (FAILOVER) -> primary: CNAME to this API Gateway
 #                                      -> secondary: CNAME to origin.<domain>
-#                                         (a plain A record at the LB, i.e.
-#                                         the OLD direct path, kept as the
-#                                         "dummy"/bypass answer)
+#                                         (a plain A record at the LB — the
+#                                         pre-existing direct path)
 #          -> API Gateway: rewrites Host back to the client's original Host
 #             (Envoy picks the route by Host, not by what the gateway used
 #             to reach it with), forwards to origin.<domain>
@@ -22,16 +27,35 @@
 # alongside this module, see k8s-lab-gitops) pointing at httpbin's
 # /status/200 — so a green health check means the whole chain works.
 #
-# Why one A record (origin.<domain>) instead of hardcoding the LB IP in
-# two places: this is also the D8 fix (docs/PHASES-4-15-EXECUTION-PLAN.md)
-# — a future LB replacement only needs this one record updated, and
-# nothing above it (the steering policy's secondary answer, the gateway's
-# backend URL) needs to change.
+# The origin.<domain> A record (one write-site for the LB's public IP) is
+# also, as a side effect, the D8 fix (docs/PHASES-4-15-EXECUTION-PLAN.md):
+# a future LB replacement only needs this one record updated, and nothing
+# above it (steering's secondary answer, the gateway's backend URL) needs
+# to change. D8 motivates that one record, not the gateway/steering layer
+# above it — that layer is the requested architecture.
 # ============================================================================
 
 # The oracle/oci provider has no data source for an existing DNS zone (only
 # the resource, for creating one) — the zone OCID comes in as a variable,
 # same convention this repo already uses for compartment_ocid etc.
+
+locals {
+  origin_fqdn = "origin.${var.domain}"
+
+  # A dedicated, NOT-steered CNAME to the gateway, used only by the health
+  # monitor below. Deliberately not the gateway's own OCI-generated
+  # hostname: this module attaches ONE certificate to the whole gateway
+  # (the wildcard for *.<domain>) — per OCI's own docs, that certificate
+  # replaces whatever default cert the raw hostname would otherwise
+  # present, so TLS to <gw-id>.apigateway.<region>.oci.customer-oci.com
+  # fails hostname validation against a cert that doesn't cover it. A
+  # plain <label>.<domain> CNAME matches the wildcard's SAN and resolves
+  # to the same gateway (OCI API Gateway routes by path, not by which
+  # hostname reached it, so /_edge/healthz answers identically either
+  # way). It must NOT be one of edge_hostnames — probing through the very
+  # steering policy the probe result feeds would be circular.
+  edge_probe_fqdn = "edge-probe.${var.domain}"
+}
 
 # ── NSG — least privilege, mirrors nsg-lb's pattern (no catch-all egress) ──
 resource "oci_core_network_security_group" "edge" {
@@ -111,7 +135,7 @@ resource "oci_apigateway_deployment" "edge" {
 
       backend {
         type                       = "HTTP_BACKEND"
-        url                        = "https://origin.${var.domain}/_edge/healthz"
+        url                        = "https://${local.origin_fqdn}/_edge/healthz"
         is_ssl_verify_disabled     = true # origin presents the lab CA, not a public CA
         connect_timeout_in_seconds = 5
         read_timeout_in_seconds    = 5
@@ -123,7 +147,7 @@ resource "oci_apigateway_deployment" "edge" {
           set_headers {
             items {
               name      = "Host"
-              values    = ["origin.${var.domain}"]
+              values    = [local.origin_fqdn]
               if_exists = "OVERWRITE"
             }
           }
@@ -144,7 +168,7 @@ resource "oci_apigateway_deployment" "edge" {
 
       backend {
         type                       = "HTTP_BACKEND"
-        url                        = "https://origin.${var.domain}/$${request.path[path]}"
+        url                        = "https://${local.origin_fqdn}/$${request.path[path]}"
         is_ssl_verify_disabled     = true
         connect_timeout_in_seconds = 10
         read_timeout_in_seconds    = 60
@@ -169,29 +193,55 @@ resource "oci_apigateway_deployment" "edge" {
 # ── origin.<domain> — the one place an LB IP is written (D8 fix) ──────────
 resource "oci_dns_rrset" "origin" {
   zone_name_or_id = var.dns_zone_id
-  domain          = "origin.${var.domain}"
+  domain          = local.origin_fqdn
   rtype           = "A"
 
   items {
-    domain = "origin.${var.domain}"
+    domain = local.origin_fqdn
     rtype  = "A"
     rdata  = var.lb_public_ip
     ttl    = 60
   }
 }
 
+# edge-probe.<domain> — see the locals block above for why the health
+# monitor can't target the gateway's own generated hostname directly.
+resource "oci_dns_rrset" "edge_probe" {
+  zone_name_or_id = var.dns_zone_id
+  domain          = local.edge_probe_fqdn
+  rtype           = "CNAME"
+
+  items {
+    domain = local.edge_probe_fqdn
+    rtype  = "CNAME"
+    rdata  = "${oci_apigateway_gateway.edge.hostname}."
+    ttl    = 60
+  }
+}
+
 # ── Health check driving the steering policy's failover decision ─────────
 resource "oci_health_checks_http_monitor" "edge" {
-  compartment_id      = var.compartment_ocid
-  display_name        = "${var.name_prefix}-hc-edge"
-  protocol            = "HTTPS"
-  port                = 443
-  path                = "/_edge/healthz"
-  targets             = [oci_apigateway_gateway.edge.hostname]
-  interval_in_seconds = 30
+  compartment_id = var.compartment_ocid
+  display_name   = "${var.name_prefix}-hc-edge"
+  protocol       = "HTTPS"
+  port           = 443
+  path           = "/_edge/healthz"
+  targets        = [local.edge_probe_fqdn]
+  # 60s, not 30s: steering's own ttl is already 60s, so a faster check
+  # interval can't produce a faster real-world failover — it only doubles
+  # the continuous synthetic-traffic cost (3 vantage points, 24/7) for a
+  # lab with negligible real traffic.
+  interval_in_seconds = 60
   timeout_in_seconds  = 10
   vantage_point_names = var.health_check_vantage_points
   is_enabled          = true
+
+  # Without this, Terraform's graph has no edge forcing the deployment to
+  # exist before the monitor starts probing it (the monitor only
+  # references the gateway's hostname, which is known before the
+  # deployment converges) — on a first apply that can mean the earliest
+  # probes hit a gateway with no live route yet.
+  depends_on = [oci_apigateway_deployment.edge]
 }
 
 # ── Steering policy: FAILOVER, gateway primary / direct-origin secondary ──
@@ -216,7 +266,7 @@ resource "oci_dns_steering_policy" "edge" {
   answers {
     name        = "origin-direct"
     rtype       = "CNAME"
-    rdata       = "origin.${var.domain}."
+    rdata       = "${local.origin_fqdn}."
     pool        = "secondary"
     is_disabled = false
   }
