@@ -12,6 +12,41 @@
 # CI secrets / environment variables and must never appear in playbook
 # output, whether run locally or in Actions.
 
+# ── helm CLI itself ───────────────────────────────────────────────────────
+# Never codified before now: every earlier rebuild had helm already on
+# control-plane-1 from the original manual Phase 8 bootstrap. A genuinely
+# fresh node has no helm at all (2026-09-09 CD run: `rc=127, command not
+# found`) — this closes that gap the same way gateway-api's role closed
+# the CRD-install gap. Uses helm's own official install script rather than
+# a hand-built download+arch-map, since this cluster's nodes are OCI
+# A1.Flex / aarch64 (not the x86_64 most one-liners assume) and the
+# upstream script already handles that correctly.
+- name: Check for existing helm binary
+  ansible.builtin.stat:
+    path: /usr/bin/helm
+  register: helm_bin_stat
+
+- name: Download the official helm install script
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    dest: /tmp/get-helm-3.sh
+    mode: '0700'
+  when: not helm_bin_stat.stat.exists
+
+- name: Install helm {{ helm_version }} (arch-aware upstream script)
+  ansible.builtin.command:
+    argv: [/tmp/get-helm-3.sh, --version, "{{ helm_version }}"]
+  environment:
+    USE_SUDO: "false"        # already root via `become: true`; avoid needing sudo on the node
+    HELM_INSTALL_DIR: /usr/bin  # NOT the script's /usr/local/bin default: this node's
+                                # sudoers secure_path is `/sbin:/bin:/usr/sbin:/usr/bin`
+                                # (confirmed live), so /usr/local/bin isn't on root's
+                                # PATH under sudo — the script's own post-install
+                                # `helm version` self-check would otherwise fail even
+                                # though the binary installed fine. /usr/bin matches
+                                # where kubectl/kubeadm/kubelet already land here.
+  when: not helm_bin_stat.stat.exists
+
 # ── Argo CD itself ───────────────────────────────────────────────────────
 - name: Add the argo-helm repo
   ansible.builtin.command:

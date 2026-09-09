@@ -6,6 +6,15 @@
 # sibling position so this default never needs overriding.
 gitops_repo_path: "{{ playbook_dir }}/../../k8s-lab-gitops"
 
+# helm CLI itself (not the argo-cd chart below) — pinned to the latest v3.x
+# patch release as of 2026-09-09. Helm v4 is the current upstream stable
+# line, but this role's whole command set (--disable-openapi-validation,
+# etc.) and the live in-cluster Argo CD release were built/proven against
+# v3 — staying on v3 here is deliberate; v4 migration is a separate,
+# later decision, not bundled into this fix. v3 gets security fixes into
+# 2027, so there's no urgency.
+helm_version: "v3.21.3"
+
 argocd_helm_version: "7.7.11"   # confirm against `helm list -n argocd` before bumping
 
 # Non-secret identity — the OCIR pull token itself is read from the
