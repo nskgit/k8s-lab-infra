@@ -82,3 +82,9 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "private_ip" {
+  type        = string
+  default     = null
+  description = "Static private IP to assign in create_vnic_details. null (default) lets OCI pick the next free address in subnet_id — unchanged behavior. Set this only when a caller needs a deterministic address (e.g. the control-plane node, whose IP is baked into kubeadm config)."
+}

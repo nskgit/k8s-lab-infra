@@ -46,5 +46,11 @@ availability_domain_index = 0
 # worker_memory_in_gbs    = 8
 # boot_volume_size_in_gbs = 50
 
+# Optional: pin the control-plane's private IP (inside cp_subnet_cidr) so
+# it's deterministic instead of DHCP-assigned. Leave unset on a fresh
+# tenancy's first apply, then pin it to whatever OCI assigned if you want
+# later rebuilds to keep the same address.
+# cp_private_ip = "10.0.1.10"
+
 # ---- LB ----
 # nodeport_http = 30080
