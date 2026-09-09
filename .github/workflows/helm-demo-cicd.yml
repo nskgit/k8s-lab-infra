@@ -143,6 +143,43 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.7"
+
+      # The cluster's API server has no public endpoint — every job in this
+      # repo that talks to it (see infra-cd.yml's smoke-test) opens its own
+      # SSH tunnel through the bastion first. HELM_DEMO_KUBECONFIG's server
+      # is https://127.0.0.1:6443 for exactly this reason: it only ever
+      # resolves once THIS runner has built the same tunnel. Confirmed live
+      # (2026-09-10) that skipping this step fails with "connection
+      # refused" — the runner has no other path to the API server at all.
+      - name: Open the tunnel to the API server (via bastion)
+        run: |
+          mkdir -p ~/.oci ~/.ssh
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
+          chmod 600 ~/.ssh/k8s_lab_ed25519
+
+          cat > terraform/primary/backend.hcl <<'EOF'
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
+          EOF
+          terraform -chdir=terraform/primary init -backend-config=backend.hcl -input=false
+
+          BASTION_IP=$(terraform -chdir=terraform/primary output -raw bastion_public_ip)
+          CP_IP=$(terraform -chdir=terraform/primary output -raw control_plane_private_ip)
+          PROXY="ssh -i ~/.ssh/k8s_lab_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -W %h:%p opc@${BASTION_IP}"
+          ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 \
+            -i ~/.ssh/k8s_lab_ed25519 -f -N -L 6443:127.0.0.1:6443 \
+            -o ProxyCommand="${PROXY}" \
+            "opc@${CP_IP}"
 
       - name: Load the scoped kubeconfig (namespace-only RBAC — see examples/helm-cicd-reference/rbac)
         run: |
@@ -189,6 +226,36 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.7"
+
+      - name: Open the tunnel to the API server (via bastion)
+        run: |
+          mkdir -p ~/.oci ~/.ssh
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
+          chmod 600 ~/.ssh/k8s_lab_ed25519
+
+          cat > terraform/primary/backend.hcl <<'EOF'
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
+          EOF
+          terraform -chdir=terraform/primary init -backend-config=backend.hcl -input=false
+
+          BASTION_IP=$(terraform -chdir=terraform/primary output -raw bastion_public_ip)
+          CP_IP=$(terraform -chdir=terraform/primary output -raw control_plane_private_ip)
+          PROXY="ssh -i ~/.ssh/k8s_lab_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -W %h:%p opc@${BASTION_IP}"
+          ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 \
+            -i ~/.ssh/k8s_lab_ed25519 -f -N -L 6443:127.0.0.1:6443 \
+            -o ProxyCommand="${PROXY}" \
+            "opc@${CP_IP}"
 
       - name: Load the scoped kubeconfig
         run: |
@@ -232,6 +299,36 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.7"
+
+      - name: Open the tunnel to the API server (via bastion)
+        run: |
+          mkdir -p ~/.oci ~/.ssh
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
+          chmod 600 ~/.ssh/k8s_lab_ed25519
+
+          cat > terraform/primary/backend.hcl <<'EOF'
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
+          EOF
+          terraform -chdir=terraform/primary init -backend-config=backend.hcl -input=false
+
+          BASTION_IP=$(terraform -chdir=terraform/primary output -raw bastion_public_ip)
+          CP_IP=$(terraform -chdir=terraform/primary output -raw control_plane_private_ip)
+          PROXY="ssh -i ~/.ssh/k8s_lab_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -W %h:%p opc@${BASTION_IP}"
+          ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 \
+            -i ~/.ssh/k8s_lab_ed25519 -f -N -L 6443:127.0.0.1:6443 \
+            -o ProxyCommand="${PROXY}" \
+            "opc@${CP_IP}"
 
       - name: Load the scoped kubeconfig
         run: |
