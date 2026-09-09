@@ -1,0 +1,247 @@
+# ============================================================================
+# LEARNING REFERENCE — plain Helm CI/CD, deliberately kept separate from
+# every other pipeline in this repo (which deploys via Argo CD/GitOps).
+#
+# Built 2026-09-10 by explicit request: a real, runnable example of the
+# "helm install/upgrade/rollback" flow interviewers ask about, industry-
+# standard end to end. It targets its own chart (examples/helm-cicd-
+# reference/chart) and its own namespace (helm-demo) — it cannot touch
+# anything Argo manages. See examples/helm-cicd-reference/README.md for
+# the full walkthrough of why each stage exists.
+#
+# Stage map (each one is a real, load-bearing industry practice, not
+# decoration):
+#   lint             -> helm lint (chart correctness)
+#   security-scan    -> Trivy (rendered-manifest misconfig) + gitleaks
+#                       (secrets) — DevSecOps: shift security left of
+#                       every deploy, not just infra changes
+#   template-validate-> kubeconform against the real K8s schema — catches
+#                       a malformed manifest before it ever reaches a
+#                       cluster, the same role `terraform plan` plays
+#   deploy-staging   -> helm upgrade --install --atomic --cleanup-on-fail
+#                       using a NAMESPACE-SCOPED ServiceAccount token
+#                       (examples/helm-cicd-reference/rbac), not a
+#                       cluster-admin credential — the single most common
+#                       real-world mistake this deliberately avoids
+#   smoke-test       -> does the deployed thing actually answer traffic —
+#                       not just "did kubectl consider it Ready"
+#   approve-production -> a required-reviewer GitHub Environment gate,
+#                       identical in kind to the real infra pipeline's
+#                       production gate — human sign-off before anything
+#                       customer-facing changes
+#   deploy-production-> the same --atomic upgrade, promoted
+#   rollback-on-failure -> EXPLICIT `helm rollback`, on top of --atomic,
+#                       for the class of failure atomic's own readiness
+#                       wait can't catch (see the role comment in
+#                       ansible/roles/argo-bootstrap/tasks/main.yml for
+#                       why both layers matter — same mechanism, proven
+#                       there first)
+# ============================================================================
+name: helm-demo CI/CD (learning reference)
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "examples/helm-cicd-reference/**"
+  push:
+    branches: [main]
+    paths:
+      - "examples/helm-cicd-reference/**"
+
+concurrency:
+  group: helm-demo-cicd
+  cancel-in-progress: false
+
+env:
+  HELM_VERSION: "v3.21.3" # same pin as the real argo-bootstrap role, for consistency
+  RELEASE_NAME: helm-demo
+  NAMESPACE: helm-demo
+  CHART_PATH: examples/helm-cicd-reference/chart
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: helm lint
+        run: helm lint "${{ env.CHART_PATH }}"
+
+  security-scan:
+    # DevSecOps principle: scan the RENDERED manifests (what actually gets
+    # applied), not just the chart templates in the abstract — a values
+    # override can introduce a misconfiguration a static template scan
+    # would never see.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # gitleaks scans history, not just the tip
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Render the chart to plain manifests for scanning
+        run: helm template "${{ env.RELEASE_NAME }}" "${{ env.CHART_PATH }}" -n "${{ env.NAMESPACE }}" > /tmp/rendered.yaml
+
+      - name: IaC misconfig scan (Trivy) — gates the build
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: /tmp/rendered.yaml
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+
+      - name: Image vulnerability scan (Trivy) — the actual image this chart ships
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: "nginxinc/nginx-unprivileged:stable-alpine"
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true # don't fail the build on CVEs upstream hasn't shipped a fix for yet
+
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  template-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Render + validate against the real Kubernetes schema
+        run: |
+          curl -sSL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz"
+          tar -xzf kubeconform.tar.gz kubeconform
+          helm template "${{ env.RELEASE_NAME }}" "${{ env.CHART_PATH }}" -n "${{ env.NAMESPACE }}" \
+            | ./kubeconform -strict -kubernetes-version 1.33.0 -summary
+
+  deploy-staging:
+    needs: [lint, security-scan, template-validate]
+    if: github.event_name != 'pull_request' # a PR only validates; deploy happens on merge/dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Load the scoped kubeconfig (namespace-only RBAC — see examples/helm-cicd-reference/rbac)
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${{ secrets.HELM_DEMO_KUBECONFIG }}" > ~/.kube/helm-demo.yaml
+          chmod 600 ~/.kube/helm-demo.yaml
+
+      - id: vars
+        run: echo "image_tag=stable-alpine" >> "$GITHUB_OUTPUT"
+
+      - name: helm upgrade --install (staging) — atomic rollback on failure
+        env:
+          KUBECONFIG: /home/runner/.kube/helm-demo.yaml
+        run: |
+          helm upgrade --install "${{ env.RELEASE_NAME }}-staging" "${{ env.CHART_PATH }}" \
+            -n "${{ env.NAMESPACE }}" \
+            --set image.tag=${{ steps.vars.outputs.image_tag }} \
+            --wait --timeout 3m \
+            --atomic --cleanup-on-fail --history-max 10
+
+      - name: Smoke test — does it actually answer traffic, not just "Ready"
+        env:
+          KUBECONFIG: /home/runner/.kube/helm-demo.yaml
+        run: |
+          kubectl -n "${{ env.NAMESPACE }}" run smoke-test-staging --rm -i --restart=Never \
+            --image=curlimages/curl:latest --command -- \
+            curl -sf --max-time 10 "http://${{ env.RELEASE_NAME }}-staging:8080/"
+
+  approve-production:
+    needs: deploy-staging
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: helm-demo-production
+    steps:
+      - run: echo "Approved for production by the environment's required reviewer."
+
+  deploy-production:
+    needs: [deploy-staging, approve-production]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Load the scoped kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${{ secrets.HELM_DEMO_KUBECONFIG }}" > ~/.kube/helm-demo.yaml
+          chmod 600 ~/.kube/helm-demo.yaml
+
+      - name: helm upgrade --install (production) — atomic rollback on failure
+        id: upgrade
+        env:
+          KUBECONFIG: /home/runner/.kube/helm-demo.yaml
+        run: |
+          helm upgrade --install "${{ env.RELEASE_NAME }}-production" "${{ env.CHART_PATH }}" \
+            -n "${{ env.NAMESPACE }}" \
+            --set image.tag=${{ needs.deploy-staging.outputs.image_tag }} \
+            --wait --timeout 3m \
+            --atomic --cleanup-on-fail --history-max 10
+
+      - name: Smoke test production
+        env:
+          KUBECONFIG: /home/runner/.kube/helm-demo.yaml
+        run: |
+          kubectl -n "${{ env.NAMESPACE }}" run smoke-test-production --rm -i --restart=Never \
+            --image=curlimages/curl:latest --command -- \
+            curl -sf --max-time 10 "http://${{ env.RELEASE_NAME }}-production:8080/"
+
+  rollback-on-failure:
+    # This is the SECOND, complementary rollback layer, same reasoning as
+    # ansible/roles/argo-bootstrap's post-upgrade check: --atomic only
+    # fires if helm's own --wait times out. If deploy-production's helm
+    # upgrade itself failed, --atomic ALREADY rolled it back automatically
+    # — this job exists for the case the upgrade step succeeded but the
+    # SMOKE TEST caught something atomic couldn't (the release came up
+    # "Ready" per Kubernetes but doesn't actually serve correct traffic).
+    needs: [deploy-production]
+    if: failure() && needs.deploy-production.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Load the scoped kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${{ secrets.HELM_DEMO_KUBECONFIG }}" > ~/.kube/helm-demo.yaml
+          chmod 600 ~/.kube/helm-demo.yaml
+
+      - name: "SAFETY NET: explicit helm rollback (production)"
+        env:
+          KUBECONFIG: /home/runner/.kube/helm-demo.yaml
+        run: |
+          helm rollback "${{ env.RELEASE_NAME }}-production" --wait --cleanup-on-fail --timeout 3m
+          echo "::error::Production deploy failed post-upgrade verification and was rolled back. Investigate before retrying."
