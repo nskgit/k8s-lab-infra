@@ -112,9 +112,11 @@ jobs:
             "${SERVER_ARGS[@]}"
 
           CERT_DIR="${LEGO_PATH}/certificates"
-          echo "cert_file=${CERT_DIR}/_.${DOMAIN}.crt" >> "$GITHUB_OUTPUT"
-          echo "key_file=${CERT_DIR}/_.${DOMAIN}.key" >> "$GITHUB_OUTPUT"
-          echo "chain_file=${CERT_DIR}/_.${DOMAIN}.issuer.crt" >> "$GITHUB_OUTPUT"
+          {
+            echo "cert_file=${CERT_DIR}/_.${DOMAIN}.crt"
+            echo "key_file=${CERT_DIR}/_.${DOMAIN}.key"
+            echo "chain_file=${CERT_DIR}/_.${DOMAIN}.issuer.crt"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Swap the gateway onto the new certificate (OCI CLI, not Terraform — see file header)
         if: inputs.staging == 'false' || github.event_name == 'schedule'
