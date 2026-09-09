@@ -15,6 +15,16 @@ spec:
       labels:
         {{- include "helm-demo.labels" . | nindent 8 }}
     spec:
+      # Pod-level, in addition to the container-level block below:
+      # Trivy's KSV-0118 flagged the container-only setting as "using the
+      # default security context, which allows root privileges" — a
+      # container-level runAsNonRoot doesn't cover init containers or a
+      # future second container in this pod, so a real hardening pass
+      # sets both, not just the one that happens to be sufficient today.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
       containers:
         - name: helm-demo
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -38,9 +48,26 @@ spec:
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          # readOnlyRootFilesystem: true — Trivy's KSV-0014. nginx-
+          # unprivileged needs exactly two writable paths (confirmed live:
+          # `cat /etc/nginx/nginx.conf` shows the pid file at /tmp/nginx.pid;
+          # `ls -la /var/cache/nginx` shows it's the proxy/fastcgi cache
+          # dir) — mount those as emptyDir instead of loosening the whole
+          # filesystem, which is the actual fix, not just quieting the scan.
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
             runAsNonRoot: true
+            runAsUser: 101
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
