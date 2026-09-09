@@ -304,7 +304,7 @@ jobs:
           rm -f tfplan.tar.gz
 
       - name: Upload the reviewed plan for CD to apply verbatim
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tfplan-${{ github.event.pull_request.head.sha }}
           path: terraform/primary/tfplan.tar.gz.gpg
@@ -329,7 +329,7 @@ jobs:
           fi
 
       - name: Post/update PR comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
