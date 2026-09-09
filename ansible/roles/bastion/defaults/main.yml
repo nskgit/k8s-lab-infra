@@ -1,0 +1,23 @@
+---
+# bastion — tunables for the jump host. Sized for VM.Standard.E2.1.Micro
+# (946 MB RAM, 30 GB disk); nothing here is shared with the k8s nodes.
+
+# journald: on-disk cap for the persistent journal and the tmpfs (/run)
+# cap for the boot-time runtime journal.
+bastion_journal_system_max_use: 200M
+bastion_journal_runtime_max_use: 32M
+
+# sshd: start:rate:full — unauthenticated connections are dropped with
+# probability rate% once `start` are pending, always once `full` are.
+bastion_sshd_max_startups: "30:50:200"
+bastion_sshd_login_grace_time: 30
+bastion_sshd_client_alive_interval: 60
+bastion_sshd_client_alive_count_max: 3
+
+# dnf-automatic is NOT installed on the bastion today and this role never
+# installs it; if it ever appears, these are the timers to keep off.
+bastion_dnf_automatic_timers:
+  - dnf-automatic.timer
+  - dnf-automatic-download.timer
+  - dnf-automatic-install.timer
+  - dnf-automatic-notifyonly.timer

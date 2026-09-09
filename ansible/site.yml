@@ -10,6 +10,16 @@
 # local-path-provisioner wait needs a schedulable node) now runs in its
 # own play AFTER workers join — see the two entries below.
 
+- name: Bastion hardening
+  hosts: bastion
+  become: true
+  gather_facts: true
+  roles:
+    # First on purpose: every play below reaches its nodes THROUGH this
+    # host, and the 2026-09-09 wedge (roles/bastion) killed a CD run at
+    # the proxy hop. Fixing the bastion before depending on it.
+    - bastion
+
 - name: Base OS + runtime + k8s packages (all nodes)
   hosts: k8s_nodes
   become: true
