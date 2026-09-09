@@ -246,7 +246,15 @@ jobs:
 
   smoke-test:
     needs: ansible-configure
-    if: needs.ansible-configure.result == 'success'
+    # always() is load-bearing, not decoration: GitHub Actions propagates a
+    # skip transitively through the whole job-ancestry graph, not just
+    # direct `needs` — terraform-apply skipping (correctly, on a push with
+    # no terraform/** changes) was enough to force smoke-test to skip too,
+    # even though ansible-configure itself succeeded (confirmed live,
+    # 2026-09-09: run 34357412627, ansible-configure success, smoke-test
+    # skipped anyway). ansible-configure already guards against this one
+    # step up; smoke-test never had the same guard.
+    if: always() && needs.ansible-configure.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
