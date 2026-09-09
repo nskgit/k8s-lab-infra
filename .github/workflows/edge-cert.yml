@@ -59,6 +59,10 @@ jobs:
           printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
 
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.7"
+
       - name: Write backend.hcl + init (read-only — only to read edge_gateway_id)
         working-directory: terraform/primary
         run: |
@@ -79,6 +83,16 @@ jobs:
           tar -xzf lego.tar.gz lego
           sudo install -m 0755 lego /usr/local/bin/lego
           lego --version
+
+      # No other workflow in this repo needs the standalone OCI CLI —
+      # everything else goes through Terraform's own embedded provider.
+      # This step (the gateway cert swap below) is the first thing that
+      # actually shells out to `oci`, and ubuntu-latest doesn't ship it.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the OCI CLI
+        run: pip install oci-cli
 
       - name: Request the certificate (DNS-01 via OCI DNS)
         id: issue
