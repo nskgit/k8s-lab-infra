@@ -302,13 +302,13 @@ jobs:
           ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 \
             -i ~/.ssh/k8s_lab_ed25519 -f -N -L 6443:127.0.0.1:6443 \
             -o ProxyCommand="${PROXY}" \
-            opc@${CP_IP}
+            "opc@${CP_IP}"
           sleep 3
 
           export KUBECONFIG=/tmp/ci-kubeconfig
           ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ~/.ssh/k8s_lab_ed25519 \
             -o ProxyCommand="${PROXY}" \
-            opc@${CP_IP} \
+            "opc@${CP_IP}" \
             "sudo cat /etc/kubernetes/admin.conf" \
             | sed "s#server: https://.*:6443#server: https://127.0.0.1:6443#" \
             > "${KUBECONFIG}"
