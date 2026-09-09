@@ -17,6 +17,15 @@ public_subnet_cidr = "10.0.0.0/24"
 cp_subnet_cidr     = "10.0.1.0/24"
 worker_subnet_cidr = "10.0.2.0/24"
 
+# Pinned to the CURRENT live control-plane address (10.0.1.209, inside
+# cp_subnet_cidr above) so this is a no-op on the running cluster today.
+# On a fresh tenancy this makes the address deterministic instead of
+# DHCP-assigned, so Ansible's kubeadm config (group_vars/all.yml
+# apiserver_advertise_ip / control_plane_endpoint, both now read from the
+# inventory hostvar) matches whatever OCI actually hands out. 2026-09-09,
+# see docs/PHASES-4-15-EXECUTION-PLAN.md D9.
+cp_private_ip = "10.0.1.209"
+
 # Your public IP as /32 — the ONLY source allowed to SSH the bastion.
 # Get it once with: curl -s ifconfig.me
 my_ip_cidr = "120.56.238.120/32"

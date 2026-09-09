@@ -32,8 +32,12 @@ gateway_api_version:       "v1.2.1"        # kubernetes-sigs/gateway-api release
 cluster_name:              "k8s-lab"
 pod_subnet:                "10.244.0.0/16"
 service_subnet:            "10.96.0.0/16"
-apiserver_advertise_ip:    "10.0.1.209"   # TODO D9: pin cp IP at first rebuild
-control_plane_endpoint:    "10.0.1.209:6443"
+# D9 (2026-09-09): read from the inventory instead of a literal, so a fresh
+# tenancy (DHCP gives a different cp address) still renders correct kubeadm
+# config. group_vars are lazily templated, so this resolves per-task, not
+# at parse time. inventory/hosts.ini keeps the literal — it IS the inventory.
+apiserver_advertise_ip:    "{{ hostvars['control-plane-1'].ansible_host }}"
+control_plane_endpoint:    "{{ hostvars['control-plane-1'].ansible_host }}:6443"
 
 # OCI Instance Metadata Service — provider-id at registration (D6).
 # Note the -H 'Authorization: Bearer Oracle' header required by IMDSv2.
