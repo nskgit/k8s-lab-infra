@@ -97,9 +97,18 @@ resource "oci_core_network_security_group_security_rule" "edge_out_lb_https" {
 }
 
 # ── Certificate for the gateway's custom domain ────────────────────────────
-# certificate/private_key aren't marked Updatable by the provider — a value
-# change replaces this resource. create_before_destroy so the gateway is
-# never briefly certificate-less during a rotation (see edge-cert.yml).
+# Day-1 bootstrap only. Ownership of the LIVE cert moves to .github/
+# workflows/edge-cert.yml the first time it runs: that workflow calls the
+# OCI CLI directly (create a new oci_apigateway_certificate, point the
+# gateway at it, delete the old one) rather than going through Terraform,
+# because a GitHub Actions workflow cannot write its own repo's secrets
+# with the built-in token — there's no way to hand a freshly-issued
+# Let's-Encrypt cert to `terraform apply` without either a new
+# admin-scoped PAT (a bigger trust escalation than this warrants) or this
+# out-of-band ownership split. The gateway's `ignore_changes` below is
+# what makes that split safe: without it, the next `terraform plan` would
+# see the rotation workflow's swap as drift and revert the gateway back
+# to this bootstrap certificate.
 resource "oci_apigateway_certificate" "edge" {
   compartment_id = var.compartment_ocid
   display_name   = "${var.name_prefix}-edge-cert"
@@ -118,6 +127,10 @@ resource "oci_apigateway_gateway" "edge" {
   subnet_id                  = var.public_subnet_id
   network_security_group_ids = [oci_core_network_security_group.edge.id]
   certificate_id             = oci_apigateway_certificate.edge.id
+
+  lifecycle {
+    ignore_changes = [certificate_id] # see comment on oci_apigateway_certificate.edge above
+  }
 }
 
 resource "oci_apigateway_deployment" "edge" {

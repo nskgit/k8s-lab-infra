@@ -83,3 +83,8 @@ output "edge_origin_fqdn" {
   description = "origin.<domain> — the LB-backed FQDN both the gateway backend and steering's secondary answer resolve through. Smoke-test should curl --resolve against this, not a raw IP."
   value       = module.edge.origin_fqdn
 }
+
+output "edge_gateway_id" {
+  description = "OCID of the API Gateway — edge-cert.yml reads this to know which gateway to point a freshly-rotated certificate at."
+  value       = module.edge.gateway_id
+}
