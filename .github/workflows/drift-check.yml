@@ -49,6 +49,11 @@ jobs:
 
       - name: terraform plan (read-only — drift, not apply)
         working-directory: terraform/primary
+        env:
+          # Day-1 sourcing for the edge module's gateway cert — see the
+          # matching step in infra-ci.yml.
+          TF_VAR_edge_certificate_pem: ${{ secrets.TLS_WILDCARD_CERT_PEM }}
+          TF_VAR_edge_certificate_key_pem: ${{ secrets.TLS_WILDCARD_KEY_PEM }}
         run: |
           terraform init -backend-config=backend.hcl -input=false
           set +e

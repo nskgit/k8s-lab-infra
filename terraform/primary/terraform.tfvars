@@ -24,6 +24,17 @@ my_ip_cidr = "120.56.238.120/32"
 # Set true only when temporarily using the Phase-A hosted CI runner path.
 allow_bastion_public_ssh = true
 
+# ---- Edge ----
+domain      = "satheshkumarnapoleon.site"
+dns_zone_id = "ocid1.dns-zone.oc1..aaaaaaaacu5xxgy6uljvyyykdsqjkbf3ifmcuk3ws6mdonqnud526p2aiv3a"
+# edge_hostnames defaults to every existing HTTPRoute host — override only
+# when adding/removing a public service.
+# edge_certificate_pem / edge_certificate_key_pem are REQUIRED and have no
+# default on purpose — never put real cert/key material in this committed
+# file. CD supplies them as TF_VAR_edge_certificate_pem /
+# TF_VAR_edge_certificate_key_pem from GitHub secrets; for a local plan,
+# export the same env vars from your own copy of the material.
+
 # ---- Access ----
 # Contents of ~/.ssh/k8s_lab_ed25519.pub — trusted by bastion/cp/workers.
 ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOg+3YijPQ77Sq0TB3MxgbxjTALYLViNQB6WUZZyVxHH k8s-lab" # trailing label FROZEN — the OCI provider treats any change to instance "metadata" (which carries this) as forcing replacement, even though the label itself is cosmetic and unused by cloud-init after first boot

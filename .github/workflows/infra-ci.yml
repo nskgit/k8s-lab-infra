@@ -255,6 +255,13 @@ jobs:
       - name: terraform plan (primary — the only root that changes routinely)
         id: plan
         working-directory: terraform/primary
+        env:
+          # Day-1 sourcing for the edge module's gateway cert: the same
+          # wildcard material Istio already uses (TLS_WILDCARD_CERT_PEM/
+          # KEY_PEM), not a new secret. See terraform/modules/edge's
+          # comments for the planned Let's-Encrypt follow-up.
+          TF_VAR_edge_certificate_pem: ${{ secrets.TLS_WILDCARD_CERT_PEM }}
+          TF_VAR_edge_certificate_key_pem: ${{ secrets.TLS_WILDCARD_KEY_PEM }}
         run: |
           terraform init -backend-config=backend.hcl -input=false
           terraform plan -no-color -out=tfplan -input=false | tee plan.txt

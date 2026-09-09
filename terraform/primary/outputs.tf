@@ -69,3 +69,17 @@ output "public_subnet_id" {
   description = "Public subnet OCID — where CCM provisions any type=LoadBalancer services (deliberate lab use only)."
   value       = module.network.public_subnet_id
 }
+
+
+# ---------------------------------------------------------------------------
+# Edge
+# ---------------------------------------------------------------------------
+output "edge_gateway_hostname" {
+  description = "The API Gateway's own hostname — steering's primary CNAME target."
+  value       = module.edge.gateway_hostname
+}
+
+output "edge_origin_fqdn" {
+  description = "origin.<domain> — the LB-backed FQDN both the gateway backend and steering's secondary answer resolve through. Smoke-test should curl --resolve against this, not a raw IP."
+  value       = module.edge.origin_fqdn
+}
