@@ -1,0 +1,144 @@
+# ============================================================================
+# edge-cert — rotates the API Gateway's public certificate via Let's
+# Encrypt, DNS-01 through OCI DNS (lego's `oraclecloud` provider).
+#
+# Deliberately bypasses Terraform for the live cert: a GitHub Actions
+# workflow can't write its own repo's secrets with the built-in token, so
+# there's no way to hand a freshly-issued cert to `terraform apply`
+# without either a new admin-scoped PAT or this design — talk to the OCI
+# API Gateway service directly with the same read/write OCI credentials
+# CI already has. terraform/modules/edge's `oci_apigateway_certificate` +
+# the gateway's `ignore_changes = [certificate_id]` exist specifically so
+# this split is safe: Terraform owns the day-1 bootstrap cert and then
+# gets out of the way.
+#
+# Verified by hand against the LIVE OCI DNS zone before this file was
+# written (2026-09-09): a real lego run against LE's staging server
+# solved both the apex and wildcard DNS-01 challenges and produced a
+# valid (staging-trust) certificate — proves the mechanism, not just the
+# YAML. --dns.resolvers is pinned to public resolvers because lego's own
+# propagation pre-check otherwise uses the runner's default resolver,
+# which failed against a flaky one during that same local test.
+#
+# Every real (non-staging) run replaces the gateway's live certificate.
+# Runs against LE staging by default on manual dispatch — production
+# issuance only happens on the schedule, or with staging explicitly set
+# to false.
+# ============================================================================
+name: edge cert rotation
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # weekly Monday 03:00 UTC — LE certs are valid 90 days
+  workflow_dispatch:
+    inputs:
+      staging:
+        description: "Use Let's Encrypt STAGING (untrusted cert, no rate limits) instead of production"
+        type: boolean
+        default: true
+
+concurrency:
+  group: edge-cert-rotation
+  cancel-in-progress: false
+
+env:
+  LEGO_VERSION: "5.4.1"
+  DOMAIN: "satheshkumarnapoleon.site"
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure OCI CLI credentials
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+
+      - name: Write backend.hcl + init (read-only — only to read edge_gateway_id)
+        working-directory: terraform/primary
+        run: |
+          cat > backend.hcl <<'EOF'
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
+          EOF
+          terraform init -backend-config=backend.hcl -input=false
+
+      - name: Install lego (pinned release binary)
+        run: |
+          curl -sSL -o lego.tar.gz \
+            "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_v${LEGO_VERSION}_linux_amd64.tar.gz"
+          tar -xzf lego.tar.gz lego
+          sudo install -m 0755 lego /usr/local/bin/lego
+          lego --version
+
+      - name: Request the certificate (DNS-01 via OCI DNS)
+        id: issue
+        env:
+          OCI_PRIVATE_KEY_PATH: /home/runner/.oci/oci_api_key.pem
+          OCI_TENANCY_OCID: ${{ vars.TENANCY_OCID }}
+          OCI_COMPARTMENT_OCID: ${{ vars.COMPARTMENT_OCID }}
+          OCI_REGION: us-ashburn-1
+          OCI_ZONE_NAME: ${{ env.DOMAIN }}
+          LEGO_PATH: /home/runner/.lego
+        run: |
+          set -o pipefail
+          # user/fingerprint live in the config file CI already writes above
+          # (same OCI credential this workflow uses for everything else) —
+          # lego's provider wants them as discrete env vars, not the ini file.
+          export OCI_USER_OCID
+          export OCI_FINGERPRINT
+          OCI_USER_OCID="$(grep '^user=' ~/.oci/config | head -1 | cut -d= -f2-)"
+          OCI_FINGERPRINT="$(grep '^fingerprint=' ~/.oci/config | head -1 | cut -d= -f2-)"
+
+          SERVER_ARGS=()
+          if [ "${{ inputs.staging }}" != "false" ]; then
+            SERVER_ARGS=(--server https://acme-staging-v02.api.letsencrypt.org/directory)
+            echo "::notice::Using Let's Encrypt STAGING — the resulting cert is untrusted by design (manual test run)."
+          fi
+
+          lego run --accept-tos --email pldisturbme@gmail.com \
+            --domains "*.${DOMAIN}" --domains "${DOMAIN}" \
+            --dns oraclecloud \
+            --dns.resolvers 8.8.8.8:53 --dns.resolvers 1.1.1.1:53 \
+            "${SERVER_ARGS[@]}"
+
+          CERT_DIR="${LEGO_PATH}/certificates"
+          {
+            echo "cert_file=${CERT_DIR}/_.${DOMAIN}.crt"
+            echo "key_file=${CERT_DIR}/_.${DOMAIN}.key"
+            echo "chain_file=${CERT_DIR}/_.${DOMAIN}.issuer.crt"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Swap the gateway onto the new certificate (OCI CLI, not Terraform — see file header)
+        if: inputs.staging == 'false' || github.event_name == 'schedule'
+        run: |
+          set -euo pipefail
+          GATEWAY_ID="$(terraform -chdir=terraform/primary output -raw edge_gateway_id)"
+          OLD_CERT_ID="$(oci api-gateway gateway get --gateway-id "${GATEWAY_ID}" --query 'data."certificate-id"' --raw-output)"
+
+          NEW_CERT_ID="$(oci api-gateway certificate create \
+            --compartment-id "${{ vars.COMPARTMENT_OCID }}" \
+            --display-name "platform-engine-edge-cert-$(date -u +%Y%m%dT%H%M%SZ)" \
+            --certificate-file '${{ steps.issue.outputs.cert_file }}' \
+            --private-key-file '${{ steps.issue.outputs.key_file }}' \
+            --intermediate-certificates-file '${{ steps.issue.outputs.chain_file }}' \
+            --wait-for-state SUCCEEDED \
+            --query 'data.resources[0].identifier' --raw-output)"
+
+          oci api-gateway gateway update \
+            --gateway-id "${GATEWAY_ID}" \
+            --certificate-id "${NEW_CERT_ID}" \
+            --force \
+            --wait-for-state ACTIVE
+
+          echo "::notice::Gateway now serving certificate ${NEW_CERT_ID}. Deleting the previous one (${OLD_CERT_ID})."
+          oci api-gateway certificate delete --certificate-id "${OLD_CERT_ID}" --force
