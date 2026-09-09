@@ -46,7 +46,15 @@ on:
         default: false
 
 concurrency:
-  group: infra-cd-main
+  # Renamed 2026-09-10: the prior group name (infra-cd-main) got stuck —
+  # multiple back-to-back cancelled/superseded runs that night (a
+  # workflow-only push, then a same-day PR merge) left every subsequent
+  # run permanently queued with zero jobs ever starting, even after a
+  # fresh workflow_dispatch and a disable/re-enable cycle. A known,
+  # rare GitHub Actions concurrency-group failure mode; renaming the
+  # group is the standard, documented recovery (there's no API to reset
+  # a group's internal queue state directly).
+  group: infra-cd-main-v2
   cancel-in-progress: false   # never cancel a live apply mid-flight
 
 env:
