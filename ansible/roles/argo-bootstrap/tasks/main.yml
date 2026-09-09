@@ -126,6 +126,45 @@
       changed_when: false
       when: not ansible_check_mode
 
+    # ── Pre-upgrade safety: know what's live, refuse a silent downgrade ──────
+    # `helm list` on a namespace that doesn't exist yet (first-ever install)
+    # errors — failed_when: false + the stdout-emptiness check below treat
+    # that the same as "no prior release", which is correct.
+    - name: Record the currently-deployed Argo CD release, if any
+      ansible.builtin.command:
+        argv: [helm, list, -n, argocd, -o, json, --kubeconfig=/etc/kubernetes/admin.conf]
+      register: argocd_helm_list
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Parse the prior release's chart version (empty dict on a fresh install)
+      ansible.builtin.set_fact:
+        argocd_prior_chart: >-
+          {{
+            ((argocd_helm_list.stdout | default('[]') | trim | from_json)
+              | selectattr('name', 'equalto', 'argocd') | map(attribute='chart') | list | first
+              | default('argo-cd-0.0.0') | regex_replace('^argo-cd-', ''))
+            if (argocd_helm_list.rc == 0 and (argocd_helm_list.stdout | default('') | trim) not in ['', '[]'])
+            else '0.0.0'
+          }}
+
+    # A stale version PIN (not a version STRING typo) already almost shipped
+    # a real downgrade once — 7.7.11 sat in this file while the live release
+    # was 10.8.2, caught only by a manual `helm upgrade --dry-run` before
+    # merge (2026-09-09, PR #26). --atomic below protects against a FAILED
+    # upgrade; it does nothing for an upgrade that *succeeds* at silently
+    # downgrading the whole GitOps control plane. This closes that gap
+    # structurally instead of relying on catching it by hand again.
+    - name: Refuse to proceed if argocd_helm_version would downgrade the live release
+      ansible.builtin.assert:
+        that: argocd_prior_chart is version(argocd_helm_version, '<=')
+        fail_msg: >-
+          argocd_helm_version ({{ argocd_helm_version }}) is older than the chart
+          already deployed ({{ argocd_prior_chart }}). Refusing to silently
+          downgrade the GitOps control plane — bump the pin, or if a downgrade
+          is genuinely intended, do it as its own deliberate, reviewed change.
+
     - name: Install/upgrade Argo CD
       ansible.builtin.command:
         argv:
@@ -147,12 +186,73 @@
           # headroom without masking a genuinely stuck rollout.
           - --timeout
           - 15m
+          # --atomic: if the release doesn't reach Ready within --timeout,
+          # helm automatically rolls back to the prior revision and this
+          # command exits non-zero — the industry-standard first line of
+          # defense for "the upgrade failed" (not a hand-rolled equivalent).
+          # --cleanup-on-fail removes any new-but-abandoned resources the
+          # failed attempt created instead of leaving them orphaned.
+          # --history-max bounds `helm history`/rollback-target storage.
+          - --atomic
+          - --cleanup-on-fail
+          - --history-max
+          - "10"
           - --disable-openapi-validation
           - --kubeconfig=/etc/kubernetes/admin.conf
       register: argocd_helm
       changed_when: >
         'has been upgraded' in argocd_helm.stdout or 'has been installed' in argocd_helm.stdout
       when: not ansible_check_mode
+
+    # ── Post-upgrade safety net: catch what --atomic can't ──────────────────
+    # --atomic only fires if helm's OWN readiness wait times out. A release
+    # can finish "deployed" — every pod Ready — and still be functionally
+    # broken in a way that only shows up a few seconds later (a bad readiness
+    # probe that flaps, a config value that parses but misbehaves). This is
+    # the second, complementary layer real CD pipelines use: verify the
+    # thing actually works post-upgrade, and if it doesn't, roll back
+    # explicitly rather than leaving a broken-but-"successful" release live.
+    - name: Verify every Argo CD component is actually rolled out and stable
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - -n
+          - argocd
+          - rollout
+          - status
+          - "{{ item }}"
+          - --timeout=120s
+      loop:
+        - deploy/argocd-server
+        - deploy/argocd-repo-server
+        - deploy/argocd-applicationset-controller
+        - deploy/argocd-redis
+        - statefulset/argocd-application-controller
+      register: argocd_post_upgrade_check
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Roll back Argo CD — post-upgrade health check failed after a "successful" helm upgrade
+      when: >-
+        not ansible_check_mode and
+        (argocd_post_upgrade_check.results | default([]) | selectattr('rc', 'ne', 0) | list | length > 0)
+      block:
+        - name: "SAFETY NET: helm rollback argocd to the pre-upgrade revision"
+          ansible.builtin.command:
+            argv: [helm, rollback, argocd, --wait, --cleanup-on-fail, --timeout, 10m, --kubeconfig=/etc/kubernetes/admin.conf]
+          register: argocd_rollback
+          changed_when: true   # only reached when the block's `when:` already confirmed a rollback is needed
+
+        - name: Fail the play loudly — a rollback happened, this needs human attention
+          ansible.builtin.fail:
+            msg: >-
+              Argo CD upgrade to {{ argocd_helm_version }} passed helm's own
+              --atomic check but failed post-upgrade verification:
+              {{ argocd_post_upgrade_check.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}.
+              Rolled back via `helm rollback argocd` (result: {{ argocd_rollback.rc == 0 }}).
+              Investigate before re-attempting the upgrade.
 
     # BLOCKER (2026-09-09 fresh-tenancy audit): these four namespaces are
     # normally created by Argo's own "namespaces" Application

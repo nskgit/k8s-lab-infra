@@ -192,6 +192,49 @@ jobs:
       - name: Playbook syntax check
         run: ansible-playbook -i inventory/hosts.ini site.yml --syntax-check
 
+  helm-chart-validate:
+    # Validates the pinned Argo CD chart version + its real values file
+    # together, BEFORE merge — catches a values.yaml that no longer matches
+    # the chart's schema (a renamed key, a type change) the same way a
+    # `terraform plan` catches a bad Terraform change, instead of finding
+    # out at CD-apply time. Runs whenever either side of that pairing
+    # changes: the chart-version pin itself, or the role that consumes it.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: k8s-lab-infra
+
+      - uses: actions/checkout@v7
+        with:
+          repository: nskgit/k8s-lab-gitops
+          path: k8s-lab-gitops
+
+      # Explicit + pinned, not "assume the runner has it": the exact
+      # assumption that helm exists already caused a real CD failure once
+      # this project (helm was never installed on control-plane-1 either —
+      # see argo-bootstrap's own helm-install task). Pinned to the same
+      # version the ansible role itself installs, for consistency.
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.21.3"
+
+      - name: helm template the pinned chart against the real values file
+        run: |
+          ARGOCD_VERSION=$(grep -oP '^argocd_helm_version:\s*"\K[^"]+' \
+            k8s-lab-infra/ansible/roles/argo-bootstrap/defaults/main.yml)
+          echo "Validating argo-cd chart ${ARGOCD_VERSION} against bootstrap/argocd-values.yaml"
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update argo
+          helm template argocd argo/argo-cd \
+            --version "${ARGOCD_VERSION}" \
+            -n argocd \
+            -f k8s-lab-gitops/bootstrap/argocd-values.yaml \
+            --disable-openapi-validation \
+            > /dev/null
+
   pip-audit:
     # Vulnerability check on the pinned ansible toolchain — mirrors what
     # k8s-lab-apps already does for its Python deps; this repo never had it.
