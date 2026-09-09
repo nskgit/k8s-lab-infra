@@ -140,3 +140,22 @@ module "lb" {
   backend_ips      = module.workers.private_ips
   nodeport_http    = var.nodeport_http
 }
+
+# ---------------------------------------------------------------------------
+# Edge — public DNS steering (FAILOVER) -> API Gateway -> the LB above.
+# ---------------------------------------------------------------------------
+module "edge" {
+  source = "../modules/edge"
+
+  compartment_ocid         = var.compartment_ocid
+  name_prefix              = var.name_prefix
+  vcn_id                   = module.network.vcn_id
+  public_subnet_id         = module.network.public_subnet_id
+  nsg_lb_id                = module.network.nsg_lb_id
+  domain                   = var.domain
+  dns_zone_id              = var.dns_zone_id
+  edge_hostnames           = var.edge_hostnames
+  lb_public_ip             = module.lb.lb_public_ip
+  edge_certificate_pem     = var.edge_certificate_pem
+  edge_certificate_key_pem = var.edge_certificate_key_pem
+}
