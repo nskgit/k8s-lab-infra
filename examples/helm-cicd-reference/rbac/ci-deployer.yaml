@@ -1,0 +1,96 @@
+# ============================================================================
+# Least-privilege identity for CI to deploy Helm releases — WITHOUT handing
+# it the cluster-admin kubeconfig every other role in this repo uses.
+#
+# This is the single most common real-world mistake in "plain Helm CI/CD"
+# setups: give the pipeline a full-admin kubeconfig because it's easy, then
+# a compromised CI secret (leaked log, malicious PR from a fork, whatever)
+# has the keys to the entire cluster. A CI deployer should only be able to
+# do exactly what deploying THIS release requires, in THIS namespace.
+#
+# Apply once, by hand or via a one-time bootstrap step (this is identity
+# infrastructure, not something a redeploy should touch):
+#   kubectl apply -f rbac/ci-deployer.yaml
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: helm-demo
+  labels:
+    purpose: helm-cicd-learning-reference
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: helm-demo-ci-deployer
+  namespace: helm-demo
+
+---
+# Namespace-scoped Role, not ClusterRole: this identity cannot see or touch
+# anything outside helm-demo, full stop — no accidental (or malicious)
+# blast radius into argocd, monitoring, or any other namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: helm-deployer
+  namespace: helm-demo
+rules:
+  # What `helm install/upgrade/rollback/uninstall` actually needs to manage
+  # the release's own storage (Helm keeps release history as Secrets) plus
+  # the resource kinds this specific chart renders. A real production Role
+  # should enumerate only the kinds the chart actually contains — resist
+  # the temptation to reach for "apiGroups: ['*']" here.
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps", "services", "serviceaccounts", "pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # pods/attach: needed for `kubectl run --rm -i` (the smoke-test step) to
+  # reliably surface the probe container's real exit code. Confirmed live
+  # (2026-09-10) it's actually required — without it, kubectl silently
+  # falls back to a log-streaming path with a permission warning on every
+  # run; the exit code happened to still come through correctly in that
+  # fallback, but a real pipeline shouldn't depend on undocumented
+  # fallback behavior working the same way in every kubectl version.
+  - apiGroups: [""]
+    resources: ["pods/attach"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read-only on events — useful for `kubectl describe`/rollout diagnostics
+  # in a failed-deploy investigation, never needed to write.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: helm-deployer-binding
+  namespace: helm-demo
+subjects:
+  - kind: ServiceAccount
+    name: helm-demo-ci-deployer
+    namespace: helm-demo
+roleRef:
+  kind: Role
+  name: helm-deployer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Kubernetes 1.24+ no longer auto-creates a long-lived Secret token for a
+# ServiceAccount (the old, over-broad default). Requesting one explicitly,
+# by name, is the modern, deliberate way to get a token CI can actually
+# put in a kubeconfig — a conscious opt-in rather than a silent default.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: helm-demo-ci-deployer-token
+  namespace: helm-demo
+  annotations:
+    kubernetes.io/service-account.name: helm-demo-ci-deployer
+type: kubernetes.io/service-account-token

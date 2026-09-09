@@ -1,0 +1,40 @@
+# Defaults for a healthy deploy. The pipeline overrides image.tag per
+# environment via --set (see workflow-reference.yml) — never hand-edit
+# this file to "do a deploy"; that's exactly the manual step a real
+# pipeline replaces.
+replicaCount: 2
+
+image:
+  # nginx-unprivileged, not plain nginx: it runs as uid 101 (nginx) by
+  # default and listens on 8080, not 80 — chosen deliberately so
+  # securityContext.runAsNonRoot below is true to how the image actually
+  # behaves, not a setting that would just fail every rollout.
+  repository: nginxinc/nginx-unprivileged
+  tag: "stable-alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+# Deliberately strict probes: the whole point of this chart, for this
+# reference pipeline, is to fail fast and visibly when the image is bad —
+# a lenient probe would let a broken rollout limp along just long enough
+# to defeat the --atomic timeout the pipeline relies on to catch it.
+probes:
+  readiness:
+    initialDelaySeconds: 2
+    periodSeconds: 3
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 3

@@ -1,0 +1,5 @@
+{{ .Release.Name }} deployed: image {{ .Values.image.repository }}:{{ .Values.image.tag }}, {{ .Values.replicaCount }} replica(s).
+
+Check it:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }} 8080:{{ .Values.service.port }}
+  curl http://localhost:8080/
