@@ -2,11 +2,12 @@
 # Pipeline 1, stage 1 — static checks + plan-on-PR for the infra repo
 # (Block 11, B11-1/B11-2). The merge-triggered apply/configure/bootstrap
 # CD lives in infra-cd.yml — this file never touches live infrastructure
-# beyond a read-only `terraform plan`.
+# beyond a read-only `terraform plan`. That plan is handed to CD as an
+# encrypted artifact and applied verbatim after merge: what the reviewer
+# approved is what runs.
 #
-# Runner: ubuntu-latest (x86) — this repo is PRIVATE (no free ARM), and
-# nothing here builds an architecture-specific artifact. Plans are
-# arch-agnostic; private repos get 2000 free minutes/month.
+# Runner: ubuntu-latest (x86) — nothing here builds an architecture-
+# specific artifact; plans are arch-agnostic.
 # ============================================================================
 name: infra CI
 
@@ -21,6 +22,12 @@ on:
       - "ansible/**"
       - "policy/**"
       - ".github/workflows/*.yml"
+  # On push to main only the two scanners run (see the per-job `if`s):
+  # branch protection requires an up-to-date branch, so the merged tree is
+  # byte-identical to the PR head every static check already passed on —
+  # re-running them is pure duplication. gitleaks stays (its history scan
+  # covers Dependabot merges, whose PR run skips it) and Trivy/Checkov stay
+  # (their SARIF upload is what populates the Security tab for main).
   push:
     branches: [main]
     paths:
@@ -40,6 +47,7 @@ env:
 jobs:
 
   terraform-checks:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -142,6 +150,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   workflow-lint:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -152,6 +161,7 @@ jobs:
           args: -color
 
   ansible-checks:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -185,6 +195,7 @@ jobs:
   pip-audit:
     # Vulnerability check on the pinned ansible toolchain — mirrors what
     # k8s-lab-apps already does for its Python deps; this repo never had it.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -197,6 +208,7 @@ jobs:
           pip-audit --requirement <(echo "ansible-core==2.21.2"; echo "ansible-lint==26.6.0")
 
   shellcheck:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -212,9 +224,15 @@ jobs:
     # Posts the diff as a PR comment, plus a separate, prominent block for
     # anything policy/risky-attrs.rego flags (LEARNING-LOG §15 — a clean
     # "0 destroy" plan is not sufficient proof of safety). This job never
-    # applies anything; infra-cd.yml re-plans and re-checks at merge time
-    # rather than reusing this exact artifact (see plan doc for why).
-    if: github.event_name == 'pull_request'
+    # applies anything — but the plan it produces IS what infra-cd.yml
+    # applies after merge (uploaded below, encrypted), so the reviewer
+    # approves the exact change that lands, not a re-plan of it.
+    #
+    # Skipped for Dependabot: its PRs get no repo secrets, so the OCI init
+    # can't work. A skipped required check still satisfies branch
+    # protection, and CD falls back to re-plan-at-merge (hard policy gate)
+    # when no artifact exists for the merged PR.
+    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -263,10 +281,35 @@ jobs:
           TF_VAR_edge_certificate_pem: ${{ secrets.TLS_WILDCARD_CERT_PEM }}
           TF_VAR_edge_certificate_key_pem: ${{ secrets.TLS_WILDCARD_KEY_PEM }}
         run: |
+          set -o pipefail   # otherwise `tee` masks a failed plan
           terraform init -backend-config=backend.hcl -input=false
           terraform plan -no-color -out=tfplan -input=false | tee plan.txt
           terraform show -json tfplan > plan.json
-          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+
+      # The binary plan carries every planned value unredacted (plan.json
+      # masks `sensitive` values; tfplan does not), and artifacts are
+      # downloadable by anyone who can read the repo — so it never leaves
+      # the runner in the clear. The symmetric key exists only in Actions
+      # secrets; infra-cd.yml decrypts with the same one.
+      - name: Encrypt the plan for hand-off to CD
+        working-directory: terraform/primary
+        env:
+          TFPLAN_PASSPHRASE: ${{ secrets.TFPLAN_PASSPHRASE }}
+        run: |
+          test -n "${TFPLAN_PASSPHRASE}" || { echo "::error::TFPLAN_PASSPHRASE secret is not set"; exit 1; }
+          tar -czf tfplan.tar.gz tfplan plan.json
+          gpg --batch --yes --symmetric --cipher-algo AES256 \
+            --pinentry-mode loopback --passphrase-fd 0 \
+            -o tfplan.tar.gz.gpg tfplan.tar.gz <<<"${TFPLAN_PASSPHRASE}"
+          rm -f tfplan.tar.gz
+
+      - name: Upload the reviewed plan for CD to apply verbatim
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.event.pull_request.head.sha }}
+          path: terraform/primary/tfplan.tar.gz.gpg
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Policy check (risky non-ForceNew attributes)
         id: policy
