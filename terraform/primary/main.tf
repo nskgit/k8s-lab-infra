@@ -105,6 +105,7 @@ module "control_plane" {
   image_ocid              = data.oci_core_images.ol_arm.images[0].id
   ssh_public_key          = var.ssh_public_key
   boot_volume_size_in_gbs = var.boot_volume_size_in_gbs
+  private_ip              = var.cp_private_ip
 }
 
 module "workers" {

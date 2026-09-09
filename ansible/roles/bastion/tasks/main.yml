@@ -1,0 +1,103 @@
+---
+# bastion — hardening for the jump host, driven by the 2026-09-09 incident:
+# the E2.1.Micro bastion wedged mid-shutdown (serial console: journald
+# "Failed to open runtime journal: No space left on device" looping, a
+# stop job for initramfs with no limit), sshd accepted TCP but sent no
+# banner, CD died with "Timeout waiting for privilege escalation prompt",
+# and console history showed dnf-makecache OOM-killed repeatedly over 61
+# days of uptime. Only a hard reset recovered it — and because the journal
+# was volatile, the previous boot's logs were gone with it.
+#
+# Idempotent: re-runs report changed=0 (verified live on first apply).
+
+# ── dnf-makecache.timer masked ─────────────────────────────────────────────
+# Same fix roles/common applies to the k8s nodes (2026-07-16, LEARNING-LOG
+# §12). Reproduced on the bastion's very first boot after the reset: at
+# 06:03 on 2026-09-09, 10 min after boot, the kernel OOM-killed dnf at
+# 725 MB anon RSS on a 946 MB box. The hourly timer is the trigger.
+- name: Ensure dnf-makecache.timer is stopped and masked (OOM incident 2026-09-09)
+  ansible.builtin.systemd:
+    name: dnf-makecache.timer
+    state: stopped
+    masked: true
+
+# ── persistent journald ────────────────────────────────────────────────────
+# 2755 root:systemd-journal matches the `z /var/log/journal` rule in
+# /usr/lib/tmpfiles.d/systemd.conf, which systemd re-applies at every boot;
+# any other mode would be reverted on reboot and flip this task back to
+# "changed".
+- name: Create the persistent journal directory
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: '2755'
+  notify:
+    - Apply tmpfiles rules to /var/log/journal
+    - Restart systemd-journald
+    - Flush runtime journal to persistent storage
+
+- name: Create the journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure journald for persistent, size-capped storage
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-bastion.conf
+    content: |
+      # Managed by Ansible (roles/bastion) — do not hand-edit.
+      [Journal]
+      Storage=persistent
+      SystemMaxUse={{ bastion_journal_system_max_use }}
+      RuntimeMaxUse={{ bastion_journal_runtime_max_use }}
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Restart systemd-journald
+    - Flush runtime journal to persistent storage
+
+# ── sshd hardening ─────────────────────────────────────────────────────────
+# sshd_config line 15 is `Include /etc/ssh/sshd_config.d/*.conf` and sshd
+# keeps the FIRST value it sees, so 50-bastion.conf (sorting before the
+# stock 50-cloud-init.conf / 50-redhat.conf, neither of which sets these)
+# wins. `validate` parses the drop-in on its own before it lands, so a
+# typo can never take sshd down on the one host every other hop needs.
+- name: Install the sshd hardening drop-in
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/50-bastion.conf
+    content: |
+      # Managed by Ansible (roles/bastion) — do not hand-edit.
+      MaxStartups {{ bastion_sshd_max_startups }}
+      LoginGraceTime {{ bastion_sshd_login_grace_time }}
+      ClientAliveInterval {{ bastion_sshd_client_alive_interval }}
+      ClientAliveCountMax {{ bastion_sshd_client_alive_count_max }}
+    owner: root
+    group: root
+    mode: '0600'
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload sshd
+
+# ── log rotation + no unattended dnf ───────────────────────────────────────
+- name: Ensure logrotate.timer is enabled and running
+  ansible.builtin.systemd:
+    name: logrotate.timer
+    enabled: true
+    state: started
+
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: rpm
+
+- name: Ensure dnf-automatic timers are stopped and disabled if the package is present
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ bastion_dnf_automatic_timers }}"
+  when: "'dnf-automatic' in ansible_facts.packages"
