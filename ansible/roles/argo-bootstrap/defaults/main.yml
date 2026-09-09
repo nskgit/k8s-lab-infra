@@ -18,10 +18,18 @@ helm_version: "v3.21.3"
 # MUST match what `helm list -n argocd` shows on the live cluster. The role
 # does `helm upgrade --install --version <this>`, so a stale pin here isn't
 # harmless — it's an unreviewed upgrade *or downgrade* of the whole GitOps
-# control plane on the next CD run. (2026-09-09: was still "7.7.11" from
-# the role's first draft while the cluster was actually on 10.8.2 from the
-# 2026-09-08 manual DR reinstall — caught by a --dry-run before it shipped.)
-argocd_helm_version: "10.8.2"
+# control plane on the next CD run. The `assert` task above this comment's
+# sibling in tasks/main.yml now refuses a downgrade structurally; a bump is
+# still a deliberate, reviewed change.
+#
+# 10.8.2 -> 10.8.4 (2026-09-10): real test case for the new --atomic +
+# post-upgrade-verify rollback path added in this same change. Diffed the
+# two chart versions before bumping (`helm pull --version X --untar`) —
+# the only difference is a redis_exporter image tag bump (v1.91.0 ->
+# v1.91.1); same appVersion (v3.5.2), zero values.yaml schema changes.
+# Deliberately picked a minimal, low-risk real bump to exercise the
+# mechanism end-to-end rather than a synthetic one.
+argocd_helm_version: "10.8.4"
 
 # Non-secret identity — the OCIR pull token itself is read from the
 # OCIR_PULL_TOKEN environment variable (never a var default, never logged).
