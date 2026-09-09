@@ -15,7 +15,13 @@ gitops_repo_path: "{{ playbook_dir }}/../../k8s-lab-gitops"
 # 2027, so there's no urgency.
 helm_version: "v3.21.3"
 
-argocd_helm_version: "7.7.11"   # confirm against `helm list -n argocd` before bumping
+# MUST match what `helm list -n argocd` shows on the live cluster. The role
+# does `helm upgrade --install --version <this>`, so a stale pin here isn't
+# harmless — it's an unreviewed upgrade *or downgrade* of the whole GitOps
+# control plane on the next CD run. (2026-09-09: was still "7.7.11" from
+# the role's first draft while the cluster was actually on 10.8.2 from the
+# 2026-09-08 manual DR reinstall — caught by a --dry-run before it shipped.)
+argocd_helm_version: "10.8.2"
 
 # Non-secret identity — the OCIR pull token itself is read from the
 # OCIR_PULL_TOKEN environment variable (never a var default, never logged).

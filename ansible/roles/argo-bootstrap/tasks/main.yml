@@ -48,6 +48,24 @@
   changed_when: true   # only reached when the "already installed" stat check above missed
   when: not helm_bin_stat.stat.exists
 
+# ── Bootstrap manifests → the node ────────────────────────────────────────
+# gitops_repo_path is a *controller* path (playbook_dir-relative), but the
+# helm/kubectl commands below run ON control-plane-1 over SSH — in CD
+# those are different machines, so a runner-side path handed straight to
+# a remote `-f` doesn't exist there (2026-09-09 CD run: "no such file or
+# directory" against /home/runner/work/...). Copy the two files the role
+# actually needs onto the node first; cleaned up at the end.
+- name: Copy Argo CD bootstrap manifests to the node
+  ansible.builtin.copy:
+    src: "{{ gitops_repo_path }}/bootstrap/{{ item }}"
+    dest: "/tmp/argo-bootstrap-{{ item }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - argocd-values.yaml
+    - root-app.yaml
+
 # ── Argo CD itself ───────────────────────────────────────────────────────
 - name: Add the argo-helm repo
   ansible.builtin.command:
@@ -77,7 +95,7 @@
       - argocd
       - --create-namespace
       - -f
-      - "{{ gitops_repo_path }}/bootstrap/argocd-values.yaml"
+      - /tmp/argo-bootstrap-argocd-values.yaml
       - --wait
       - --disable-openapi-validation
       - --kubeconfig=/etc/kubernetes/admin.conf
@@ -267,10 +285,18 @@
       - --kubeconfig=/etc/kubernetes/admin.conf
       - apply
       - -f
-      - "{{ gitops_repo_path }}/bootstrap/root-app.yaml"
+      - /tmp/argo-bootstrap-root-app.yaml
   register: root_app_apply
   changed_when: >
     root_app_apply.stdout_lines |
     select('search', '(created|configured)$') |
     list | length > 0
   when: not ansible_check_mode
+
+- name: Remove the copied bootstrap manifests
+  ansible.builtin.file:
+    path: "/tmp/argo-bootstrap-{{ item }}"
+    state: absent
+  loop:
+    - argocd-values.yaml
+    - root-app.yaml
