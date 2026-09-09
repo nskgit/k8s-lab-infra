@@ -26,6 +26,7 @@ resource "oci_core_instance" "node" {
     nsg_ids          = var.nsg_ids
     assign_public_ip = var.assign_public_ip
     hostname_label   = each.key
+    private_ip       = var.private_ip
   }
 
   source_details {

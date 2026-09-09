@@ -131,6 +131,12 @@ variable "cp_memory_in_gbs" {
   default = 8
 }
 
+variable "cp_private_ip" {
+  type        = string
+  default     = null
+  description = "Optional static private IP for the control-plane node (must fall inside cp_subnet_cidr). null lets OCI/DHCP assign it — the only safe default for a fresh tenancy. Set in terraform.tfvars to keep Ansible's kubeadm config (apiserver advertise address / control-plane endpoint) deterministic across a rebuild."
+}
+
 variable "worker_shape" {
   type    = string
   default = "VM.Standard.A1.Flex"
