@@ -1,0 +1,26 @@
+---
+# Handler order is the order in this file, not notify order — journald
+# must be restarted (to read the new drop-in) before the runtime journal
+# is flushed into /var/log/journal.
+
+- name: Apply tmpfiles rules to /var/log/journal
+  # Sets the group ACLs from /usr/lib/tmpfiles.d/systemd.conf on the new
+  # directory the same way a boot would.
+  ansible.builtin.command:
+    argv: [systemd-tmpfiles, --create, --prefix, /var/log/journal]
+  changed_when: true
+
+- name: Restart systemd-journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+
+- name: Flush runtime journal to persistent storage
+  ansible.builtin.command:
+    argv: [journalctl, --flush]
+  changed_when: true
+
+- name: Reload sshd
+  ansible.builtin.systemd:
+    name: sshd
+    state: reloaded
