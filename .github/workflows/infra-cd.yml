@@ -290,14 +290,25 @@ jobs:
           BASTION_IP=$(terraform -chdir=terraform/primary output -raw bastion_public_ip)
           CP_IP=$(terraform -chdir=terraform/primary output -raw control_plane_private_ip)
 
-          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+          # Bare `-J` (ProxyJump) does not reliably carry -i's identity
+          # file to the jump hop against this bastion — confirmed live
+          # (2026-09-09, first real smoke-test run: "Permission denied
+          # (publickey...)" reaching the bastion itself, immediately
+          # resolved by switching to this exact ProxyCommand form).
+          # render-inventory.sh and ansible's ssh_common_args already use
+          # this pattern for the same bastion; this step never had it.
+          PROXY="ssh -i ~/.ssh/k8s_lab_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -W %h:%p opc@${BASTION_IP}"
+
+          ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 \
             -i ~/.ssh/k8s_lab_ed25519 -f -N -L 6443:127.0.0.1:6443 \
-            -J "opc@${BASTION_IP}" "opc@${CP_IP}"
+            -o ProxyCommand="${PROXY}" \
+            "opc@${CP_IP}"
           sleep 3
 
           export KUBECONFIG=/tmp/ci-kubeconfig
-          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/k8s_lab_ed25519 \
-            -J "opc@${BASTION_IP}" "opc@${CP_IP}" \
+          ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ~/.ssh/k8s_lab_ed25519 \
+            -o ProxyCommand="${PROXY}" \
+            "opc@${CP_IP}" \
             "sudo cat /etc/kubernetes/admin.conf" \
             | sed "s#server: https://.*:6443#server: https://127.0.0.1:6443#" \
             > "${KUBECONFIG}"
