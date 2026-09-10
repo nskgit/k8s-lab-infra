@@ -1,13 +1,14 @@
 # Where we are — resume pointer for the next session
 
-**Last updated:** 2026-09-09 — **Block 11 (CI/CD) reached its first
-fully-green, fully-automated run.** `terraform-apply -> ansible-configure
-(incl. argo-bootstrap) -> smoke-test` all ran for real and passed in the
-same CD run for the first time in this project's history: nodes Ready,
-all 16 Argo Applications Synced/Healthy, public URLs 2xx/3xx. Getting
-here required fixing several real, previously-unexercised bugs — see
-"What changed today" below. `docs/LEARNING-LOG.md` has the incident
-write-ups; this file is just the resume pointer.
+**Last updated:** 2026-09-10 — the full DR-capstone build (production
+approval gate, fresh-tenancy fixes, the Helm upgrade+rollback pipeline,
+a separate plain-Helm learning reference, and the zero-touch rebuild
+pipeline itself) landed across PRs #26-#42 and is confirmed live. This
+entry corrects several stale claims below it (the old "Next options"
+list still said the production gate and edge cert work were pending —
+they're done). See "What changed 2026-09-09 night → 2026-09-10" for the
+detailed diff against the previous entry. `docs/LEARNING-LOG.md` has the
+incident write-ups; this file is just the resume pointer.
 
 **New session opener:**
 > Read `docs/CURRENT-STATE.md` and `docs/PHASES-COMPLETED.md` §Phase 8.
@@ -27,9 +28,71 @@ write-ups; this file is just the resume pointer.
 | 6 | Istio + Gateway API + real domain (+SNI 2nd domain, internal gw) | ✅ |
 | 7 / 7b | kube-prometheus-stack, metrics-server, Kiali, Loki, Fluent Bit | ✅ |
 | 8 | Argo CD — full platform GitOps | ✅ |
-| **Block 11** | **CI/CD (PR → plan → gated apply → smoke-test)** | ✅ **first fully-green run 2026-09-09** — hardening items remain, see below |
-| Edge | Public DNS steering → API Gateway → LB → Istio | ✅ live 2026-09-09 (not in original phase plan — built on explicit request) |
+| **Block 11** | **CI/CD (PR → plan → gated apply → smoke-test → rollback)** | ✅ first green 2026-09-09, DR-capstone hardening (secrets bootstrap, policy-as-code, branch protection, drift check) added 2026-09-09/10 — 3 known gaps remain, see below |
+| Edge | Public DNS steering → API Gateway → LB → Istio | ✅ live 2026-09-09; hand-made objects deleted; LE cert rotation built + staging-proven, production swap not yet confirmed (see below) |
+| Helm ops | Atomic+rollback upgrade pipeline for Argo CD's own Helm release | ✅ live 2026-09-09 (10.8.2→10.8.4 through the new pipeline) |
 | 9-15 | Apps, promotion, chaos/rebuild, runner, DR, stretch | ⏳ |
+
+## What changed 2026-09-09 night → 2026-09-10 (since the entry below)
+
+This closes out the DR-capstone plan (`docs/` doesn't carry the plan doc
+itself — it lived in Claude's plan-mode file — but the build is real and
+live):
+
+- **Production approval gate**: done. `production` GitHub Environment
+  + required reviewer gates `terraform-apply`; CD reuses the exact
+  PR-reviewed plan (tree-hash verified) instead of re-planning.
+- **Fresh-tenancy hardening**: 2 of 5 audit findings fixed (hardcoded
+  control-plane private IP; `argo-bootstrap` secrets now wait for their
+  target namespaces to exist). **3 remain open**: no Kubernetes upgrade
+  path (`kubeadm upgrade` + drain/cordon + version-skew checks), no
+  etcd/PVC backup (MariaDB is the one thing that would actually lose
+  data on a real loss), and HPA-managed Deployments (echo, podinfo, etc.)
+  have no `ignoreDifferences` on `spec.replicas` so Argo's `selfHeal`
+  can still fight the HPA's own scaling decisions.
+- **Zero-touch rebuild pipeline** (the actual DR capstone): `argo-bootstrap`
+  now materializes every bootstrap secret from CI secrets (repo deploy
+  key, both TLS certs, grafana-admin, ocir-pull, a freshly-generated
+  `blog-db-credentials`) instead of by hand. `infra-cd.yml` runs
+  `terraform-apply → ansible-configure → smoke-test → rollback-on-failure`
+  end to end; a failure after a successful `terraform apply` opens a
+  revert PR (never auto-merged, by design — see `LEARNING-LOG.md` §15).
+  Two pieces are **deliberately stubbed, not silently missing**: Argo
+  per-app rollback (waiting on `smoke-test` to emit structured per-app
+  health) and the D8 DNS-IP-sync step (see next bullet).
+- **D8 DNS-sync bug found and fixed 2026-09-10**: the sync step compared
+  the LB IP against the bare apex `satheshkumarnapoleon.site`, which has
+  **zero A records** in the OCI DNS zone — it could never have detected
+  a real IP change. Fixed to compare against `origin.<domain>` (the
+  actual write-site per `terraform/modules/edge/main.tf`) and wired in
+  the real `oci dns record rrset update` call (zone OCID now exposed as
+  a new `dns_zone_id` terraform output). Written, not yet tested/merged.
+- **CI/policy hardening**: Conftest/OPA (`policy/risky-attrs.rego`),
+  ShellCheck, pip-audit, a nightly `drift-check.yml`, and branch
+  protection on `main` (required status checks, admin-enforced, linear
+  history, no force-push/delete) are all live. `k8s-lab-gitops` gained
+  its own CI (`gitops-ci.yml`); `k8s-lab-apps` gained `dependabot.yml`.
+- **Plain-Helm learning reference** (`examples/helm-cicd-reference/`) —
+  a separate, isolated CI/CD pipeline using plain `helm upgrade --atomic`
+  (not Argo/GitOps) built for interview-prep purposes. Least-privilege
+  RBAC, Trivy+gitleaks+kubeconform, staged promotion with a real approval
+  gate, atomic+explicit rollback. Proven live end to end including a
+  real production approval traversal. Does not touch or replace the
+  Argo-managed fleet.
+- **Edge cert rotation status**: `edge-cert.yml`'s own bugs (missing
+  `terraform` setup, missing OCI CLI) are fixed and the **staging** path
+  is proven live. The **production** swap has not yet actually happened:
+  first attempt hit a transient DNS negative-cache (self-resolving,
+  unrelated to code); the next two attempts were dispatched with
+  `gh workflow run --field staging=false`, which sends the value as a
+  *string* — this workflow's `type: boolean` input didn't coerce it and
+  both runs silently fell back to the `default: true` (staging), so the
+  live gateway cert is still the original lab-CA wildcard. Fix identified
+  but not yet run: dispatch via `echo '{"staging": false}' | gh workflow
+  run "edge cert rotation" --json` to send a real JSON boolean.
+- Hand-made API Gateway objects (`lab-apigw`, `lab-apigw-private`,
+  `acme-api-gateway`) are confirmed **deleted** live — this cleanup, listed
+  as still-pending in the old "Next options" below, is actually done.
 
 ## What changed today (2026-09-09) — for context on the fixes below
 
@@ -105,40 +168,33 @@ percentiles, error budget, burn rate) · cert lab-CA wildcard expires
 2027-07-12, gateway uses the same wildcard as a stopgap pending a
 Let's-Encrypt-via-OCI-DNS follow-up.
 
-## Next options (in rough priority order)
+## Next options (in rough priority order) — updated 2026-09-10
 
-1. **Production approval gate** (`feat/prod-gates`, pushed but no PR yet):
-   a `production` GitHub Environment with a required reviewer gating
-   `terraform-apply`, plus CD applying the exact plan a PR reviewer saw
-   (uploaded encrypted from `infra-ci.yml`, tree-hash-verified against the
-   merge commit) instead of re-planning. Needs the operator's go-ahead on
-   4 repo settings (environment, branch protection, a new
-   `TFPLAN_PASSPHRASE` secret, and — already done — the Actions
-   PR-creation permission) before the PR can be opened for real.
-2. **Fresh-tenancy / upgrade-safety hardening** — two deep audits done
-   2026-09-09 found real gaps, none yet fixed: hardcoded control-plane
-   private IP (breaks a fresh cluster), `argo-bootstrap`'s secrets created
-   before their target namespaces exist on a truly fresh cluster, no
-   Kubernetes upgrade path at all (`kubeadm upgrade` + drain/cordon +
-   version-skew checks), no etcd/PVC backup (MariaDB is the one thing
-   that would actually lose data), HPAs fighting Argo's `selfHeal` on
-   `spec.replicas`. A 5-agent parallel batch to fix the first few of
-   these was started and hit a session token limit before landing
-   anything — needs a clean retry.
-3. **Edge follow-up**: replace the day-1 lab-wildcard cert on the API
-   Gateway with a scheduled Let's-Encrypt-via-OCI-DNS-01 workflow
-   (`edge_certificate_pem`/`key_pem` already isolated as their own
-   Terraform variables specifically so this swap doesn't need a redesign).
-   Also: delete the hand-made `lab-apigw`/`lab-apigw-private`/`steer-api`/
-   `hc-apigw`/LB-listener-`h1` objects the new `modules/edge` replaces —
-   deliberately deferred as a separate, reviewed cleanup step.
-4. **Phase 9 proper / Demo C** (Argo Rollouts automated canary) — Phase
+1. **Finish the production LE cert swap**: dispatch `edge-cert.yml` with
+   a real JSON boolean (see bullet above) and confirm live that the
+   gateway actually serves a Let's-Encrypt cert, not just that the run
+   goes green.
+2. **Commit + test the D8 DNS-sync fix** (written, not yet merged) —
+   verify `terraform output -raw dns_zone_id` resolves post-merge and the
+   `oci dns record rrset update` call is correct against the live zone
+   before trusting it to run unattended on a real IP change.
+3. **Remaining fresh-tenancy gaps** (3 of the original 5, see above):
+   Kubernetes upgrade path, etcd/PVC backup, HPA-vs-selfHeal
+   `ignoreDifferences`. None started.
+4. **Argo per-app rollback**: extend `smoke-test` to emit structured
+   per-app Synced/Healthy results (not just a single pass/fail), then
+   wire `rollback-on-failure` to call the per-app rollback instead of its
+   current stub.
+5. **Full destroy-and-rebuild drill**: the one thing that would actually
+   *prove* the zero-touch pipeline end to end. Deliberately not attempted
+   yet — this lab has no second environment to rehearse against, so this
+   needs a joint, scheduled decision before running it for real (not
+   something to do unattended).
+6. **Phase 9 proper / Demo C** (Argo Rollouts automated canary) — Phase
    9-lite (CI → OCIR → gitops → Argo, zero human steps) already complete
    since 2026-07-16; this is the next rung up.
-5. **`k8s-lab-apps` round-out** — not touched this session; the original
-   Block 11 scope called for auditing it the way §15 was found for
-   infra/ansible (dependabot, CI parity). Unverified whether this is
-   still needed.
+7. **`k8s-lab-apps` round-out** — `dependabot.yml` added 2026-09-09;
+   unverified whether further CI parity work is still needed.
 
 ## Standing invariants
 
