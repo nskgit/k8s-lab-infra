@@ -356,6 +356,13 @@ jobs:
     if: always() && needs.ansible-configure.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      # Consumed by rollback-on-failure to target exactly the apps that
+      # were actually Degraded, instead of reverting the whole infra repo
+      # for what might be an app-only problem. $GITHUB_OUTPUT is written
+      # regardless of this step's own exit code, as long as the step ran
+      # to that point — the later `exit 1` below doesn't drop it.
+      degraded_apps: ${{ steps.health.outputs.degraded_apps }}
     steps:
       - uses: actions/checkout@v7
 
@@ -389,6 +396,7 @@ jobs:
           terraform init -backend-config=backend.hcl -input=false
 
       - name: Nodes Ready + Argo Applications Healthy (via bastion tunnel)
+        id: health
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
@@ -436,6 +444,8 @@ jobs:
             sleep 15
           done
           if [ -n "${NOT_READY:-}" ]; then
+            DEGRADED_JSON=$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"${NOT_READY}")
+            echo "degraded_apps=${DEGRADED_JSON}" >> "$GITHUB_OUTPUT"
             echo "::error::Timed out waiting on: ${NOT_READY}"
             kubectl -n argocd get applications
             exit 1
@@ -445,7 +455,7 @@ jobs:
     needs: [terraform-apply, ansible-configure, smoke-test]
     if: failure() && needs.terraform-apply.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
@@ -454,7 +464,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Open a revert PR (terraform layer — never auto-merged)
+      # Only for a genuine config-management failure — a smoke-test-only
+      # failure (ansible-configure succeeded or was skipped) gets the
+      # surgical per-app Argo rollback below instead. Reverting the whole
+      # infra repo wouldn't even address an app-only problem, and the
+      # commit that triggered this run may not be at fault for it.
+      - name: Open a revert PR (terraform/ansible layer — never auto-merged)
+        if: needs.ansible-configure.result == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -465,12 +481,129 @@ jobs:
           git revert --no-edit HEAD
           git push origin "${BRANCH}"
           gh pr create --title "Revert: CD pipeline failed on $(git rev-parse --short HEAD~1)" \
-            --body "infra-cd.yml failed after this commit merged (terraform apply, ansible-configure, or smoke-test — see the failed run for which). Opening this revert for human review rather than auto-merging, per the incident lessons in LEARNING-LOG §15: an unreviewed revert onto a possibly-partially-applied state can compound the problem. Merge this PR to roll forward with the revert." \
+            --body "infra-cd.yml failed after this commit merged (terraform apply or ansible-configure — see the failed run for which). Opening this revert for human review rather than auto-merging, per the incident lessons in LEARNING-LOG §15: an unreviewed revert onto a possibly-partially-applied state can compound the problem. Merge this PR to roll forward with the revert." \
             --base main --head "${BRANCH}"
 
-      - name: Argo app-layer rollback (only if apps went Degraded, infra/ansible otherwise fine)
+      - uses: hashicorp/setup-terraform@v4
+        if: needs.ansible-configure.result != 'failure' && needs.smoke-test.result == 'failure'
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure OCI CLI credentials + backend (to read bastion/cp IPs)
+        if: needs.ansible-configure.result != 'failure' && needs.smoke-test.result == 'failure'
+        working-directory: terraform/primary
         run: |
-          echo "Per-app 'argocd app rollback <app> <previous-revision>' for
-          any app smoke-test found Degraded — left as a follow-up once the
-          smoke-test job above reports structured per-app results instead
-          of a single pass/fail (see plan doc verification section)."
+          mkdir -p ~/.oci
+          printf '%s' "${{ secrets.OCI_CONFIG_FILE_CONTENT }}" > ~/.oci/config
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY_PEM }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+          cat > backend.hcl <<'EOF'
+          bucket    = "k8s-lab-tfstate"
+          namespace = "idqz7bbbe34a"
+          key       = "primary/terraform.tfstate"
+          region    = "us-ashburn-1"
+          auth      = "APIKey"
+          config_file_profile = "DEFAULT"
+          EOF
+          terraform init -backend-config=backend.hcl -input=false
+
+      # Only reached when infra/ansible are otherwise healthy and
+      # smoke-test alone found specific apps Degraded — see the plan
+      # doc's rollback design ("far more surgical than reverting the
+      # whole infra repo for an app-layer problem"). Rolls each degraded
+      # app back to the history entry immediately before its current
+      # sync, via the same Application.spec.operation field the real
+      # `argocd app rollback` CLI patches internally — confirmed live
+      # against this cluster's actual CRD schema (2026-09-10) rather
+      # than assumed: single-source apps carry history[].revision +
+      # .source, but multi-source apps (kube-prometheus-stack, Helm
+      # chart + a values-repo ref) carry history[].revisions + .sources
+      # (plural) instead, and the operation patch has to match whichever
+      # shape the target app actually uses.
+      - name: Argo app-layer rollback (only if apps went Degraded, infra/ansible otherwise fine)
+        if: needs.ansible-configure.result != 'failure' && needs.smoke-test.result == 'failure'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/k8s_lab_ed25519
+          chmod 600 ~/.ssh/k8s_lab_ed25519
+
+          BASTION_IP=$(terraform -chdir=terraform/primary output -raw bastion_public_ip)
+          CP_IP=$(terraform -chdir=terraform/primary output -raw control_plane_private_ip)
+          PROXY="ssh -i ~/.ssh/k8s_lab_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -W %h:%p opc@${BASTION_IP}"
+
+          ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 \
+            -i ~/.ssh/k8s_lab_ed25519 -f -N -L 6443:127.0.0.1:6443 \
+            -o ProxyCommand="${PROXY}" \
+            "opc@${CP_IP}"
+          sleep 3
+
+          export KUBECONFIG=/tmp/ci-kubeconfig
+          ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ~/.ssh/k8s_lab_ed25519 \
+            -o ProxyCommand="${PROXY}" \
+            "opc@${CP_IP}" \
+            "sudo cat /etc/kubernetes/admin.conf" \
+            | sed "s#server: https://.*:6443#server: https://127.0.0.1:6443#" \
+            > "${KUBECONFIG}"
+
+          DEGRADED='${{ needs.smoke-test.outputs.degraded_apps }}'
+          if [ -z "${DEGRADED}" ] || [ "${DEGRADED}" = "[]" ]; then
+            echo "smoke-test reported no structured degraded-app list (e.g. it timed out waiting on nodes, before the Argo check ran) — nothing this step can target."
+            exit 1
+          fi
+          echo "Degraded apps to roll back: ${DEGRADED}"
+
+          OVERALL_OK=true
+          for APP in $(jq -r '.[]' <<<"${DEGRADED}"); do
+            echo "::group::${APP}"
+            HISTORY=$(kubectl -n argocd get application "${APP}" -o jsonpath='{.status.history}')
+            LEN=$(jq 'length' <<<"${HISTORY}")
+            if [ "${LEN}" -lt 2 ]; then
+              echo "::warning::${APP} has fewer than 2 history entries (${LEN}) — nothing to roll back to. Skipping."
+              OVERALL_OK=false
+              echo "::endgroup::"
+              continue
+            fi
+
+            TARGET=$(jq '.[-2]' <<<"${HISTORY}")
+            if jq -e 'has("revisions")' <<<"${TARGET}" > /dev/null; then
+              # Multi-source app: plural revisions/sources.
+              PATCH=$(jq -n --argjson t "${TARGET}" \
+                '{operation:{initiatedBy:{username:"infra-cd-bot"},info:[{name:"Reason",value:"smoke-test found this app Degraded; auto-rollback to its previous history entry"}],sync:{revisions:$t.revisions,sources:$t.sources,prune:true,syncStrategy:{apply:{force:true}}}}}')
+            else
+              PATCH=$(jq -n --argjson t "${TARGET}" \
+                '{operation:{initiatedBy:{username:"infra-cd-bot"},info:[{name:"Reason",value:"smoke-test found this app Degraded; auto-rollback to its previous history entry"}],sync:{revision:$t.revision,source:$t.source,prune:true,syncStrategy:{apply:{force:true}}}}}')
+            fi
+
+            echo "Rolling back ${APP} to history id $(jq -r '.id' <<<"${TARGET}")..."
+            kubectl -n argocd patch application "${APP}" --type merge -p "${PATCH}"
+
+            echo "Waiting for the rollback operation to complete (timeout 180s)..."
+            OP_END=$((SECONDS + 180))
+            PHASE=""
+            while [ "${SECONDS}" -lt "${OP_END}" ]; do
+              PHASE=$(kubectl -n argocd get application "${APP}" -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)
+              [ "${PHASE}" = "Succeeded" ] || [ "${PHASE}" = "Failed" ] || [ "${PHASE}" = "Error" ] && break
+              sleep 10
+            done
+            echo "Operation phase: ${PHASE:-timed out}"
+
+            echo "Waiting for ${APP} to report Healthy again (timeout 120s)..."
+            HEALTH_END=$((SECONDS + 120))
+            STATUS=""
+            while [ "${SECONDS}" -lt "${HEALTH_END}" ]; do
+              STATUS=$(kubectl -n argocd get application "${APP}" -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+              [ "${STATUS}" = "Healthy" ] && break
+              sleep 10
+            done
+
+            if [ "${PHASE}" = "Succeeded" ] && [ "${STATUS}" = "Healthy" ]; then
+              echo "${APP}: rollback succeeded, app is Healthy."
+            else
+              echo "::error::${APP}: rollback did not restore health (operation phase=${PHASE:-unknown}, health=${STATUS:-unknown}) — needs a human look."
+              OVERALL_OK=false
+            fi
+            echo "::endgroup::"
+          done
+
+          [ "${OVERALL_OK}" = "true" ]
