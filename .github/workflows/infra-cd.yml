@@ -245,22 +245,40 @@ jobs:
         working-directory: terraform/primary
         run: terraform apply -auto-approve -input=false tfplan
 
+      # No first-party Action installs the standalone `oci` CLI (same gap
+      # edge-cert.yml hit) — this is the only step in this job that shells
+      # out to it directly instead of going through Terraform's provider.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the OCI CLI
+        run: pip install oci-cli
+
       - name: Sync DNS if the bastion/LB public IP changed
         working-directory: terraform/primary
         run: |
+          set -euo pipefail
           LB_IP=$(terraform output -raw lb_public_ip)
+          ZONE_ID=$(terraform output -raw dns_zone_id)
           echo "Current LB public IP: ${LB_IP}"
-          # Compares against the public DNS zone's current A record and
-          # updates it via `oci dns record rrset update` only on a mismatch.
-          # NOTE: first real run needs the exact zone/domain name confirmed
-          # against the live OCI DNS zone before this is load-bearing —
-          # flagged in the plan doc's verification section, not yet proven.
-          CURRENT_DNS_IP=$(dig +short satheshkumarnapoleon.site @8.8.8.8 | tail -1)
+
+          # origin.<domain> is the one A record modules/edge actually writes
+          # the LB IP to (see terraform/modules/edge/main.tf's "D8 fix"
+          # comment) — the bare apex has no A record in this zone at all
+          # (confirmed live 2026-09-10: `oci dns record rrset get` on the
+          # apex returns zero items), so comparing against the apex here
+          # would never correctly detect a real change.
+          CURRENT_DNS_IP=$(dig +short origin.satheshkumarnapoleon.site @8.8.8.8 | tail -1)
           if [ "${LB_IP}" != "${CURRENT_DNS_IP}" ]; then
-            echo "::warning::LB IP changed (${CURRENT_DNS_IP} -> ${LB_IP}) — DNS sync needed, see LEARNING-LOG §15 follow-up (D8)."
-            # oci dns record rrset update ... (left as a follow-up: needs the
-            # exact zone OCID + rrset shape confirmed once, then this becomes
-            # a real command instead of a warning).
+            echo "::warning::LB IP changed (${CURRENT_DNS_IP} -> ${LB_IP}) — syncing origin.satheshkumarnapoleon.site."
+            oci dns record rrset update \
+              --zone-name-or-id "${ZONE_ID}" \
+              --domain "origin.satheshkumarnapoleon.site" \
+              --rtype A \
+              --items "[{\"domain\": \"origin.satheshkumarnapoleon.site\", \"rtype\": \"A\", \"ttl\": 60, \"rdata\": \"${LB_IP}\"}]" \
+              --force
+          else
+            echo "DNS already matches — no sync needed."
           fi
 
   ansible-configure:
