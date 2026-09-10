@@ -88,3 +88,8 @@ output "edge_gateway_id" {
   description = "OCID of the API Gateway — edge-cert.yml reads this to know which gateway to point a freshly-rotated certificate at."
   value       = module.edge.gateway_id
 }
+
+output "dns_zone_id" {
+  description = "OCID of the OCI DNS zone — infra-cd.yml's DNS-sync step (D8) reads this to know which zone's origin.<domain> A record to update when the LB public IP changes."
+  value       = var.dns_zone_id
+}
