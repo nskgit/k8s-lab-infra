@@ -217,7 +217,7 @@ jobs:
       # this project (helm was never installed on control-plane-1 either —
       # see argo-bootstrap's own helm-install task). Pinned to the same
       # version the ansible role itself installs, for consistency.
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: "v3.21.3"
 
@@ -347,7 +347,7 @@ jobs:
           rm -f tfplan.tar.gz
 
       - name: Upload the reviewed plan for CD to apply verbatim
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tfplan-${{ github.event.pull_request.head.sha }}
           path: terraform/primary/tfplan.tar.gz.gpg
@@ -372,7 +372,7 @@ jobs:
           fi
 
       - name: Post/update PR comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
